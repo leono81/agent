@@ -16,30 +16,28 @@ try:
     from jira_agent.jira_tool_agent import run_jira_conversation
     # Usaremos Any para el historial por simplicidad en Streamlit,
     # aunque internamente sean ModelMessage. Opcional: importar ModelMessage si prefieres tipado estricto.
-    # from pydantic_ai.messages import ModelMessage
+    from pydantic_ai.messages import ModelMessage
 except ImportError as e:
     st.error(f"Error al importar el agente: {e}. Asegúrate de ejecutar Streamlit desde el directorio raíz 'jira_issue_manager' y que la estructura de carpetas sea correcta.")
     st.stop() # Detener la app si no se puede importar el agente
 
 # --- Configuración de la Página Streamlit ---
 st.set_page_config(
-    page_title="Agente de Jira",
-    page_icon=" conversación",
+    page_title="Asistente de Jira",
+    page_icon=" conversation", # Puedes cambiar el emoji
     layout="wide"
 )
 
-st.title("💬 Jira Assistant Chat")
+st.title("💬 Asistente de Jira ")
 st.caption("Interactúa con tu instancia de Jira de forma conversacional.")
 
 # --- Inicialización del Historial de Chat ---
-# Usamos st.session_state para mantener el historial entre recargas de la app
 if "messages" not in st.session_state:
-    # El historial almacenará diccionarios simples para fácil visualización en Streamlit
-    # Cada diccionario tendrá 'role' ('user' o 'assistant') y 'content' (string)
+    # Historial para mostrar en la UI (diccionarios)
     st.session_state.messages = []
 if "internal_history" not in st.session_state:
-     # Almacenamos aquí el historial interno de Pydantic AI (objetos ModelMessage)
-     st.session_state.internal_history = [] # List[Any] o List[ModelMessage]
+     # Historial para Pydantic AI (objetos ModelMessage)
+     st.session_state.internal_history = [] # Inicialmente List[Any] o List[ModelMessage]
 
 # --- Mostrar Mensajes Anteriores ---
 for message in st.session_state.messages:
@@ -61,9 +59,26 @@ if prompt := st.chat_input("Pregúntale algo a Jira Assistant..."):
         try:
             # Ejecutar la lógica de la conversación ASÍNCRONA
             # Pasamos el historial INTERNO de Pydantic AI
-            new_internal_messages, agent_response_text = asyncio.run(
-                run_jira_conversation(prompt, st.session_state.internal_history)
+            # Asegurarnos que el historial interno es del tipo correcto si usamos tipado estricto
+            internal_history_typed: List[ModelMessage] = cast(List[ModelMessage], st.session_state.internal_history)
+
+            # Necesitamos ejecutar la corutina en un event loop
+            # Streamlit < 1.17 : asyncio.run() funciona
+            # Streamlit >= 1.17: Mejor usar asyncio.new_event_loop() y run_in_executor o st.spinner
+            # Por simplicidad ahora, usamos asyncio.run()
+            try:
+                 # Intenta obtener el loop existente de Streamlit si es posible
+                 loop = asyncio.get_running_loop()
+            except RuntimeError:
+                 # Si no hay loop, crea uno nuevo (puede pasar al ejecutar script directamente)
+                 loop = asyncio.new_event_loop()
+                 asyncio.set_event_loop(loop)
+
+            # Ejecuta la corutina
+            new_internal_messages, agent_response_text = loop.run_until_complete(
+                 run_jira_conversation(prompt, internal_history_typed)
             )
+
 
             # Actualizar el historial interno con los nuevos mensajes de esta ronda
             st.session_state.internal_history.extend(new_internal_messages)
@@ -74,23 +89,28 @@ if prompt := st.chat_input("Pregúntale algo a Jira Assistant..."):
             st.session_state.messages.append({"role": "assistant", "content": agent_response_text})
 
         except ValueError as ve:
-            # Errores esperados (ej. credenciales faltantes)
             error_msg = f"Error de configuración o valor: {ve}"
             st.error(error_msg)
             st.session_state.messages.append({"role": "assistant", "content": error_msg})
         except ImportError as ie:
-             # Si hay error de importación al correr (menos probable aquí)
              error_msg = f"Error de importación: {ie}"
              st.error(error_msg)
              st.session_state.messages.append({"role": "assistant", "content": error_msg})
         except Exception as e:
-            # Otros errores inesperados
-            error_msg = f"Ocurrió un error inesperado: {e}"
-            st.exception(e) # Muestra el traceback en Streamlit
-            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            error_msg = f"Ocurrió un error inesperado durante la conversación."
+            st.error(error_msg)
+            st.exception(e) # Muestra el traceback en Streamlit para depuración
+            # Añadir mensaje genérico al historial visible
+            st.session_state.messages.append({"role": "assistant", "content": "Lo siento, ocurrió un error procesando tu solicitud."})
+            # Loguear el error detallado si tenemos el logger configurado aquí también
+            # (Opcional: importar y usar setup_logger aquí)
+            # logger = setup_logger("streamlit_ui")
+            # logger.exception("Error en la interfaz Streamlit")
+
 
 # --- Botón para Limpiar Historial (Opcional) ---
-if st.button("Limpiar Conversación"):
+st.sidebar.title("Opciones")
+if st.sidebar.button("Limpiar Conversación"):
     st.session_state.messages = []
     st.session_state.internal_history = []
     st.rerun() # Recargar la página para reflejar el cambio
