@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Environments
+.env
+.venv/
+venv/
+
+# IDE / Editor folders
+.vscode/
+.idea/
+
+# Runtime / Logs
+workbench/
+*.log
+
+# OS specific
+.DS_Store
+Thumbs.db
