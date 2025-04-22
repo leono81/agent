@@ -1,6 +1,8 @@
 import streamlit as st
 import os
 import sys
+import atexit
+import signal
 from datetime import datetime
 
 # Agregar el directorio de la aplicación al path para importaciones relativas
@@ -13,6 +15,38 @@ from app.utils.logger import get_logger
 
 # Configurar logger
 logger = get_logger("streamlit_app")
+
+# Función para liberar recursos cuando se cierra la aplicación
+def cleanup_resources():
+    logger.info("Limpiando recursos de la aplicación...")
+    try:
+        if "agent" in st.session_state:
+            logger.info("Cerrando el agente de Jira...")
+            # Si el agente tiene algún método de cierre, llamarlo aquí
+            agent = st.session_state.agent
+            # Algunas veces es útil enviar un mensaje de despedida
+            agent.process_message_sync("$__cleanup_signal__")
+    except Exception as e:
+        logger.error(f"Error al limpiar recursos: {e}")
+    logger.info("Recursos limpiados correctamente")
+
+# Registrar la función de limpieza para ejecutarse al salir
+atexit.register(cleanup_resources)
+
+# Manejo de señales
+def signal_handler(sig, frame):
+    logger.info(f"Señal recibida: {sig}. Limpiando recursos...")
+    cleanup_resources()
+    # Al ser un servidor web, dejamos que Streamlit maneje la salida por sí mismo
+    # sys.exit(0) - No llamamos a exit ya que interrupcionamos la app de Streamlit
+
+# Configurar manejadores de señales
+try:
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+except (ValueError, AttributeError):
+    # Ignorar errores en entornos donde no se pueden configurar señales (ej. hilos)
+    logger.warning("No se pudieron configurar los manejadores de señales")
 
 # Título de la aplicación
 st.set_page_config(
@@ -91,6 +125,11 @@ def process_message(message):
                 
                 # Mostrar la respuesta
                 st.markdown(response)
+            except KeyboardInterrupt:
+                logger.warning("Procesamiento interrumpido por el usuario")
+                error_msg = "El procesamiento fue interrumpido. Por favor, intenta nuevamente."
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                st.markdown(error_msg)
             except Exception as e:
                 logger.error(f"Error al procesar mensaje: {e}")
                 error_msg = f"Lo siento, ha ocurrido un error: {str(e)}"

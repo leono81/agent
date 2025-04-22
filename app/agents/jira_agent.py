@@ -1,4 +1,5 @@
 import os
+import atexit
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
@@ -10,7 +11,14 @@ from pydantic import BaseModel, Field
 from app.utils.jira_client import JiraClient
 from app.utils.logger import get_logger
 from app.agents.models import Issue, Worklog, Transition, AgentResponse
-from app.config.config import OPENAI_API_KEY
+from app.config.config import OPENAI_API_KEY, LOGFIRE_TOKEN, USE_LOGFIRE
+
+# Importar logfire para instrumentación
+try:
+    import logfire
+    has_logfire = True
+except ImportError:
+    has_logfire = False
 
 # Forward reference para type hint de JiraAgent dentro de JiraAgentDependencies
 if TYPE_CHECKING:
@@ -18,6 +26,43 @@ if TYPE_CHECKING:
 
 # Configurar logger
 logger = get_logger("jira_agent")
+
+# Configurar logfire para el agente (si está disponible)
+use_logfire = False
+if has_logfire and USE_LOGFIRE:
+    try:
+        # Configurar Logfire con el token proporcionado
+        os.environ["LOGFIRE_TOKEN"] = LOGFIRE_TOKEN
+        logfire.configure(send_to_logfire=True)  # Activar envío a Logfire
+        logger.info("Logfire configurado correctamente con token de escritura")
+        use_logfire = True
+        
+        # Registrar función para cerrar Logfire al salir
+        def cleanup_logfire():
+            logger.info("Cerrando Logfire...")
+            try:
+                # Esperar 2 segundos para que se envíen los últimos logs
+                import time
+                time.sleep(2)
+                # En algunas versiones más recientes de Logfire es posible llamar a logfire.shutdown()
+                # Pero verificamos si existe el método
+                if hasattr(logfire, 'shutdown'):
+                    logfire.shutdown()
+            except Exception as e:
+                logger.warning(f"Error al cerrar Logfire: {e}")
+        
+        # Registrar la función para ejecutarse al salir
+        atexit.register(cleanup_logfire)
+        
+        # Instrumentar también las peticiones HTTP para un mejor seguimiento
+        try:
+            logfire.instrument_httpx(capture_all=True)
+            logger.info("Instrumentación HTTPX activada")
+        except Exception as http_e:
+            logger.warning(f"No se pudo activar la instrumentación HTTPX: {http_e}")
+            
+    except Exception as e:
+        logger.warning(f"No se pudo configurar Logfire: {e}. La instrumentación no estará disponible.")
 
 # Configuración global de pydanticai para usar la API key de OpenAI
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
@@ -35,78 +80,178 @@ class JiraAgent:
     def __init__(self):
         """Inicializa el agente de Jira."""
         try:
-            self.jira_client = JiraClient()
+            # Iniciar cliente Jira
+            jira_client = JiraClient()
             
-            # Inicializar contexto para mantener estado entre llamadas
-            self.context = {
-                "last_issues": [],  # Lista de últimas issues mostradas
-                "last_search_term": None,  # Último término de búsqueda
-                "issues_by_index": {}  # Mapeo de índices a claves de issues
+            # Crear diccionario de contexto para almacenar estado entre interacciones
+            context = {
+                "conversation_history": [],
+                "last_search_results": [],
+                "current_issue": None
             }
             
-            # Crear el agente utilizando pydanticai
+            # Crear dependencias para el agente
+            self._deps = JiraAgentDependencies(
+                jira_client=jira_client,
+                context=context,
+                agent_instance=self
+            )
+            
+            # Inicializar el agente de PydanticAI
             self.agent = Agent(
-                model="openai:gpt-4o",  # Modelo de OpenAI
+                "openai:gpt-4o",  # Usa GPT-4o para mejor procesamiento de contexto
                 deps_type=JiraAgentDependencies,
-                output_type=str,
-                memory=True,  # Habilitar memoria para mantener contexto de conversación
+                # Habilitar memoria para mantener contexto de conversación
                 system_prompt=(
                     "Eres un asistente experto en Jira que ayuda a los usuarios a gestionar sus issues. "
                     "Puedes proporcionar información sobre issues, buscar issues, agregar registros de trabajo "
                     "y cambiar estados de issues en Jira. "
                     "Sé conciso, claro y siempre útil. Cuando necesites más información, pregunta al usuario. "
-                    "Para buscar issues, SIEMPRE utiliza la herramienta smart_search_issues. "
-                    "IMPORTANTE: Cuando el usuario haga referencia a una issue por un número de opción o descripción (como 'opción 1', 'la primera', 'opción 7', 'esa issue', 'la daily'), "
+                    "\n\n"
+                    "DIRECTRICES IMPORTANTES DE CONTEXTO Y MEMORIA: "
+                    "- SIEMPRE usa la herramienta get_conversation_history al inicio de tu respuesta para recordar el contexto de la conversación. "
+                    "  Esto te permitirá mantener la coherencia y recordar referencias a issues, búsquedas previas y preferencias del usuario. "
+                    "- Cuando el usuario seleccione una issue, SIEMPRE usa remember_current_issue para guardarla para futuras referencias. "
+                    "- Si el usuario hace referencia a 'la issue actual', 'esta issue', 'la misma issue', etc., usa get_current_issue para obtener la issue actual. "
+                    "- Si el usuario hace referencia a algo mencionado previamente, consulta el historial para recordar el contexto. "
+                    "\n\n"
+                    "DIRECTRICES PARA BÚSQUEDA DE ISSUES: "
+                    "- Para buscar issues, SIEMPRE utiliza la herramienta smart_search_issues. "
+                    "- Cuando el usuario haga referencia a una issue por un número de opción o descripción (como 'opción 1', 'la primera', 'opción 7', 'esa issue', 'la daily'), "
                     "DEBES utilizar la herramienta get_issue_by_reference para obtener la clave correcta de la issue (ej. PSIMDESASW-123) antes de proceder con otras acciones (como get_issue_details o add_worklog). "
-                    "No intentes adivinar la clave de la issue basándote en el número de opción. Usa siempre get_issue_by_reference.\n\n"
-                    "Para registrar tiempo (add_worklog): "
+                    "- No intentes adivinar la clave de la issue basándote en el número de opción. Usa siempre get_issue_by_reference."
+                    "\n\n"
+                    "DIRECTRICES PARA REGISTRO DE TIEMPO (ADD_WORKLOG): "
                     "- Si el usuario da un nombre de issue ambiguo (ej. 'daily'), primero usa smart_search_issues, presenta las opciones, espera confirmación, usa get_issue_by_reference para obtener la clave, y LUEGO llama a add_worklog con la clave correcta. "
                     "- Puedes especificar el tiempo en minutos ('30 minutos'), horas decimales ('1.5 horas', '0,75 h') o mixto ('1 hora 30 minutos', '2h 15m'). "
                     "- Puedes especificar la fecha con términos relativos ('ayer', 'lunes pasado') o fechas exactas ('2024-05-20'). Si no se especifica, usa hoy."
-                )
+                ),
+                instrument=use_logfire  # Habilitar instrumentación para monitoreo con logfire solo si está disponible
             )
             
             # Registrar herramientas para el agente
             self._register_tools()
             
             logger.info("Agente de Jira inicializado correctamente")
+            
         except Exception as e:
             logger.error(f"Error al inicializar el agente de Jira: {e}")
             raise
     
     def _register_tools(self):
-        """Registra las herramientas para el agente."""
+        """Registra las herramientas disponibles para el agente."""
         
+        @self.agent.tool
+        async def get_conversation_history(
+            ctx: RunContext[JiraAgentDependencies],
+            messages_count: Optional[int] = 5
+        ) -> List[Dict[str, str]]:
+            """
+            Obtiene el historial de conversación reciente para mantener contexto.
+            
+            Args:
+                messages_count: Número de mensajes recientes a devolver.
+                
+            Returns:
+                Lista de mensajes con el formato {"role": "user"|"assistant", "content": "texto"}
+            """
+            history = ctx.deps.context.get("conversation_history", [])
+            
+            # Devolver los últimos n mensajes
+            if history and len(history) > 0:
+                recent_history = history[-messages_count:] if messages_count < len(history) else history
+                logger.info(f"Recuperados {len(recent_history)} mensajes del historial de conversación")
+                return recent_history
+            else:
+                logger.info("No hay historial de conversación disponible")
+                return []
+                
+        @self.agent.tool
+        async def remember_current_issue(
+            ctx: RunContext[JiraAgentDependencies],
+            issue_key: str,
+            issue_summary: Optional[str] = None
+        ) -> Dict[str, Any]:
+            """
+            Guarda la issue actual en el contexto para referencia futura.
+            
+            Args:
+                issue_key: Clave de la issue actual (ej. PSIMDESASW-111).
+                issue_summary: Resumen opcional de la issue.
+                
+            Returns:
+                Información sobre la issue guardada.
+            """
+            # Guardar la issue en el contexto
+            ctx.deps.context["current_issue"] = {
+                "key": issue_key,
+                "summary": issue_summary
+            }
+            
+            logger.info(f"Issue {issue_key} guardada como issue actual en el contexto")
+            return {
+                "success": True,
+                "message": f"Issue {issue_key} recordada para futuras referencias"
+            }
+            
+        @self.agent.tool
+        async def get_current_issue(
+            ctx: RunContext[JiraAgentDependencies]
+        ) -> Dict[str, Any]:
+            """
+            Obtiene la issue actual guardada en el contexto.
+            
+            Returns:
+                Información sobre la issue actual o un error si no hay ninguna.
+            """
+            current_issue = ctx.deps.context.get("current_issue")
+            
+            if current_issue:
+                logger.info(f"Recuperada issue actual del contexto: {current_issue['key']}")
+                return {
+                    "success": True,
+                    "issue": current_issue
+                }
+            else:
+                logger.info("No hay issue actual en el contexto")
+                return {
+                    "success": False,
+                    "error": "No hay ninguna issue actual guardada en el contexto"
+                }
+                
         @self.agent.tool
         async def get_my_issues(ctx: RunContext[JiraAgentDependencies]) -> List[Dict[str, Any]]:
             """
-            Obtiene todas las issues asignadas al usuario actual y actualiza el contexto.
+            Obtiene las issues asignadas al usuario actual.
             
             Returns:
-                Lista de issues asignadas al usuario.
+                Lista de issues asignadas al usuario actual.
             """
             issues = ctx.deps.jira_client.get_my_issues()
+            
+            # Formatear resultados
             formatted_issues = []
+            for i, issue in enumerate(issues):
+                try:
+                    formatted_issue = {
+                        "index": i + 1,  # índice para referencia humana (comienza en 1)
+                        "key": issue["key"],
+                        "summary": issue["fields"]["summary"],
+                        "status": issue["fields"]["status"]["name"],
+                        "type": issue["fields"]["issuetype"]["name"]
+                    }
+                    formatted_issues.append(formatted_issue)
+                    
+                    # Guardar mapping entre índice y clave para uso futuro
+                    ctx.deps.context.setdefault("issues_by_index", {})[i + 1] = issue["key"]
+                    
+                except Exception as e:
+                    logger.error(f"Error al formatear issue {issue.get('key', 'desconocida')}: {e}")
+                    
+            # Actualizar contexto con últimas issues mostradas
+            ctx.deps.context["last_search_results"] = formatted_issues
             
-            # Limpiar mapeo anterior
-            ctx.deps.context["issues_by_index"] = {}
-            ctx.deps.context["last_issues"] = []
-            
-            for idx, issue in enumerate(issues, 1):
-                formatted_issue = {
-                    "key": issue["key"],
-                    "summary": issue["fields"]["summary"],
-                    "status": issue["fields"]["status"]["name"],
-                    "index": idx
-                }
-                
-                formatted_issues.append(formatted_issue)
-                
-                # Guardar en el contexto para referencias futuras
-                ctx.deps.context["issues_by_index"][str(idx)] = issue["key"]
-                ctx.deps.context["last_issues"].append(formatted_issue)
-            
-            logger.info(f"Obtenidas {len(formatted_issues)} issues")
+            logger.info(f"Obtenidas {len(formatted_issues)} issues asignadas al usuario")
             return formatted_issues
         
         @self.agent.tool
@@ -189,7 +334,7 @@ class JiraAgent:
                     logger.info(f"Referencia '{search_term}' resuelta directamente a issue {issue_key} por smart_search_issues")
                     # Devolver un formato similar al de una búsqueda, pero indicando que se resolvió por referencia
                     # Podríamos incluso obtener los detalles aquí, pero mantengámoslo simple por ahora
-                    resolved_issue = next((item for item in ctx.deps.context["last_issues"] if item["key"] == issue_key), None)
+                    resolved_issue = next((item for item in ctx.deps.context["last_search_results"] if item["key"] == issue_key), None)
                     if resolved_issue:
                          return {
                              "found_by_reference": True,
@@ -199,7 +344,7 @@ class JiraAgent:
                              "message": f"Referencia '{search_term}' resuelta a la issue {issue_key} ({resolved_issue.get('summary', '')})."
                          }
                     else: 
-                         # Si no está en last_issues (raro), devolver solo la clave
+                         # Si no está en last_search_results (raro), devolver solo la clave
                           return {
                              "found_by_reference": True,
                              "issues": [{"key": issue_key, "index": index_to_find}], 
@@ -227,7 +372,7 @@ class JiraAgent:
             
             # Limpiar mapeo anterior SOLO si es una nueva búsqueda (no referencia)
             ctx.deps.context["issues_by_index"] = {}
-            ctx.deps.context["last_issues"] = []
+            ctx.deps.context["last_search_results"] = []
             
             # Paso 1: Obtener todas las issues asignadas al usuario
             my_issues = ctx.deps.jira_client.get_my_issues()
@@ -261,7 +406,7 @@ class JiraAgent:
                     issue_with_index["index"] = idx
                     indexed_issues.append(issue_with_index)
                     ctx.deps.context["issues_by_index"][str(idx)] = issue["key"]
-                    ctx.deps.context["last_issues"].append(issue_with_index)
+                    ctx.deps.context["last_search_results"].append(issue_with_index)
                 
                 return {
                     "found_in_my_issues": True,
@@ -294,7 +439,7 @@ class JiraAgent:
                 issue_with_index["index"] = idx
                 indexed_all_issues.append(issue_with_index)
                 ctx.deps.context["issues_by_index"][str(idx)] = issue["key"]
-                ctx.deps.context["last_issues"].append(issue_with_index)
+                ctx.deps.context["last_search_results"].append(issue_with_index)
             
             logger.info(f"Smart búsqueda '{search_term}': Encontradas {len(formatted_all_issues)} issues en búsqueda global")
             # Si no se encontraron issues
@@ -735,45 +880,91 @@ class JiraAgent:
         Procesa un mensaje del usuario y devuelve la respuesta del agente.
         
         Args:
-            message: Mensaje del usuario.
+            message (str): Mensaje del usuario.
             
         Returns:
-            Respuesta del agente.
+            str: Respuesta del agente.
         """
         try:
-            # Crear dependencias con contexto y la instancia del agente
-            deps = JiraAgentDependencies(jira_client=self.jira_client, context=self.context, agent_instance=self)
+            # Obtener el contexto actual
+            context = self._deps.context
             
-            # Ejecutar el agente
+            # Añadir el mensaje actual al historial de conversación
+            if "conversation_history" in context:
+                context["conversation_history"].append({"role": "user", "content": message})
+            
             logger.info(f"Procesando mensaje: {message}")
-            result = await self.agent.run(message, deps=deps)
+            
+            # Opcional: Imprimir historial actual para depuración
+            history_len = len(context.get("conversation_history", []))
+            logger.debug(f"Historial de conversación actual: {history_len} mensajes")
+            
+            # Procesar mensaje con el agente utilizando las dependencias almacenadas
+            result = await self.agent.run(message, deps=self._deps)
+            response = result.output
+            
+            # Añadir la respuesta del agente al historial
+            if "conversation_history" in context:
+                context["conversation_history"].append({"role": "assistant", "content": response})
+                # Limitar historial a últimos 20 mensajes para prevenir crecimiento excesivo
+                if len(context["conversation_history"]) > 20:
+                    context["conversation_history"] = context["conversation_history"][-20:]
+                    logger.debug("Historial de conversación truncado a 20 mensajes")
             
             logger.info("Mensaje procesado correctamente")
-            return result.output
+            return response
         except Exception as e:
             logger.error(f"Error al procesar mensaje: {e}")
-            return f"Lo siento, ha ocurrido un error: {str(e)}"
+            return f"Lo siento, ocurrió un error al procesar tu mensaje: {e}"
     
     def process_message_sync(self, message: str) -> str:
         """
-        Versión sincrónica de process_message para facilitar la integración con Streamlit.
+        Versión sincrónica de process_message.
         
         Args:
-            message: Mensaje del usuario.
+            message (str): Mensaje del usuario.
             
         Returns:
-            Respuesta del agente.
+            str: Respuesta del agente.
         """
+        import asyncio
+        
+        # Mensaje especial para limpieza/cierre
+        if message == "$__cleanup_signal__":
+            logger.info("Recibida señal de limpieza en el agente")
+            return "Cerrando sesión..."
+        
+        # Crear un nuevo loop para cada solicitud para evitar problemas de reutilización
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         try:
-            # Crear dependencias con contexto y la instancia del agente
-            deps = JiraAgentDependencies(jira_client=self.jira_client, context=self.context, agent_instance=self)
+            # Ejecutar el proceso asíncrono en el nuevo loop
+            response = loop.run_until_complete(self.process_message(message))
+            return response
             
-            # Ejecutar el agente
-            logger.info(f"Procesando mensaje sincrónico: {message}")
-            result = self.agent.run_sync(message, deps=deps)
+        except KeyboardInterrupt:
+            logger.warning("Solicitud interrumpida por el usuario")
+            return "La solicitud ha sido interrumpida. Por favor, intenta de nuevo."
             
-            logger.info("Mensaje procesado correctamente")
-            return result.output
         except Exception as e:
-            logger.error(f"Error al procesar mensaje sincrónico: {e}")
-            return f"Lo siento, ha ocurrido un error: {str(e)}" 
+            logger.error(f"Error al procesar mensaje de forma sincrónica: {e}")
+            return f"Lo siento, ocurrió un error al procesar tu mensaje: {e}"
+            
+        finally:
+            # Asegurarse de que todas las tareas pendientes se completen y cerrar el loop
+            try:
+                # Cancelar todas las tareas pendientes
+                pending = asyncio.all_tasks(loop=loop)
+                for task in pending:
+                    task.cancel()
+                
+                # Ejecutar las tareas canceladas hasta que se complete la cancelación
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                
+                # Cerrar el loop
+                loop.close()
+                
+            except Exception as close_error:
+                logger.warning(f"Error al cerrar el loop asyncio: {close_error}") 
