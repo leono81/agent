@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 import re  # Importar regex para parsing
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, RunContext, Tool
 from pydantic import BaseModel, Field
 
 from app.utils.jira_client import JiraClient
@@ -97,10 +97,57 @@ class JiraAgent:
                 agent_instance=self
             )
             
+            # Preparar las herramientas para el agente
+            agent_tools = [
+                Tool(self.get_conversation_history, takes_ctx=True, 
+                    name="get_conversation_history",
+                    description="Obtiene el historial reciente de la conversación entre el usuario y el agente."),
+                Tool(self.remember_current_issue, takes_ctx=True, 
+                    name="remember_current_issue",
+                    description="Guarda la issue actual en la memoria para futuras referencias. Usa esta herramienta cada vez que el usuario seleccione una issue específica."),
+                Tool(self.get_current_issue, takes_ctx=True, 
+                    name="get_current_issue",
+                    description="Obtiene la issue actualmente guardada en memoria, si existe. Útil cuando el usuario hace referencia a 'la issue actual', 'esta issue', etc."),
+                Tool(self.get_my_issues, takes_ctx=True, 
+                    name="get_my_issues",
+                    description="Obtiene las issues asignadas al usuario actual en Jira. Muestra las issues con su título, estado, y prioridad."),
+                Tool(self.search_issues, takes_ctx=True, 
+                    name="search_issues",
+                    description="Busca issues en Jira basado en un término de búsqueda. Útil para encontrar issues específicas por título, descripción o palabra clave."),
+                Tool(self.smart_search_issues, takes_ctx=True, 
+                    name="smart_search_issues",
+                    description="Busca issues en Jira de manera inteligente, combinando búsqueda por términos y filtrado por diferentes criterios. Esta es la herramienta principal para buscar issues. Usa esta herramienta en lugar de search_issues."),
+                Tool(self.get_issue_by_reference, takes_ctx=True, 
+                    name="get_issue_by_reference",
+                    description="Obtiene la clave de una issue basada en una referencia del usuario (como 'opción 1', 'la primera', etc.). Usa esta herramienta antes de realizar acciones sobre una issue mencionada por el usuario."),
+                Tool(self.get_issue_details, takes_ctx=True, 
+                    name="get_issue_details",
+                    description="Obtiene detalles completos de una issue específica de Jira."),
+                Tool(self.get_issue_worklogs, takes_ctx=True, 
+                    name="get_issue_worklogs",
+                    description="Obtiene los registros de trabajo (worklogs) de una issue específica de Jira."),
+                Tool(self.add_worklog, takes_ctx=True, 
+                    name="add_worklog",
+                    description="Agrega un registro de trabajo (worklog) a una issue de Jira. Requiere la clave de la issue, tiempo dedicado y opcionalmente un comentario y fecha."),
+                Tool(self.add_comment, takes_ctx=True, 
+                    name="add_comment",
+                    description="Agrega un comentario a una issue de Jira SIN registrar tiempo. Útil cuando el usuario solo quiere comentar sin imputar horas."),
+                Tool(self.get_issue_transitions, takes_ctx=True, 
+                    name="get_issue_transitions",
+                    description="Obtiene las transiciones disponibles para una issue específica de Jira."),
+                Tool(self.transition_issue, takes_ctx=True, 
+                    name="transition_issue",
+                    description="Cambia el estado de una issue de Jira utilizando una transición disponible."),
+                Tool(self.get_current_time_tracking, takes_ctx=True, 
+                    name="get_current_time_tracking",
+                    description="Obtiene información detallada sobre el tiempo registrado para la issue especificada, incluyendo tiempo estimado, tiempo gastado, y tiempo restante.")
+            ]
+            
             # Inicializar el agente de PydanticAI
             self.agent = Agent(
                 "openai:gpt-4o",  # Usa GPT-4o para mejor procesamiento de contexto
                 deps_type=JiraAgentDependencies,
+                tools=agent_tools,  # Usar la lista de herramientas preparada
                 # Habilitar memoria para mantener contexto de conversación
                 system_prompt=(
                     "Eres un asistente experto en Jira que ayuda a los usuarios a gestionar sus issues. "
@@ -125,645 +172,28 @@ class JiraAgent:
                     "- Si el usuario da un nombre de issue ambiguo (ej. 'daily'), primero usa smart_search_issues, presenta las opciones, espera confirmación, usa get_issue_by_reference para obtener la clave, y LUEGO llama a add_worklog con la clave correcta. "
                     "- Puedes especificar el tiempo en minutos ('30 minutos'), horas decimales ('1.5 horas', '0,75 h') o mixto ('1 hora 30 minutos', '2h 15m'). "
                     "- Puedes especificar la fecha con términos relativos ('ayer', 'lunes pasado') o fechas exactas ('2024-05-20'). Si no se especifica, usa hoy."
+                    "\n\n"
+                    "DIRECTRICES PARA COMENTARIOS: "
+                    "- Si el usuario solo quiere añadir un comentario a una issue SIN registrar tiempo, usa la herramienta add_comment. "
+                    "- No uses add_worklog cuando el usuario solo quiere comentar sin registrar tiempo. "
+                    "- Ejemplos de peticiones para añadir solo comentarios: 'añade un comentario a la issue', 'comenta en la issue', 'agrega el comentario X a la issue'."
+                    "\n\n"
+                    "INFORMACIÓN TÉCNICA IMPORTANTE SOBRE LA API DE JIRA: "
+                    "- El método issue_worklog de la API de Jira NO acepta argumentos con nombre (keyword arguments). "
+                    "  Debe ser llamado con argumentos posicionales en el orden correcto: issue_key, started, time_in_sec. "
+                    "- El parámetro 'started' debe estar en formato ISO 8601 con offset (ej. '2023-04-22T14:00:00.000+0000'). "
+                    "- Si necesitas añadir comentarios, debes usar issue_add_comment como método separado, ya que issue_worklog no procesa comentarios. "
+                    "- La herramienta add_worklog ya maneja esta lógica internamente, pero recuerda estos detalles si necesitas resolver problemas. "
+                    "- Para cualquier error relacionado con la API, consulta la documentación de la biblioteca 'atlassian-python-api'."
                 ),
                 instrument=use_logfire  # Habilitar instrumentación para monitoreo con logfire solo si está disponible
             )
-            
-            # Registrar herramientas para el agente
-            self._register_tools()
             
             logger.info("Agente de Jira inicializado correctamente")
             
         except Exception as e:
             logger.error(f"Error al inicializar el agente de Jira: {e}")
             raise
-    
-    def _register_tools(self):
-        """Registra las herramientas disponibles para el agente."""
-        
-        @self.agent.tool
-        async def get_conversation_history(
-            ctx: RunContext[JiraAgentDependencies],
-            messages_count: Optional[int] = 5
-        ) -> List[Dict[str, str]]:
-            """
-            Obtiene el historial de conversación reciente para mantener contexto.
-            
-            Args:
-                messages_count: Número de mensajes recientes a devolver.
-                
-            Returns:
-                Lista de mensajes con el formato {"role": "user"|"assistant", "content": "texto"}
-            """
-            history = ctx.deps.context.get("conversation_history", [])
-            
-            # Devolver los últimos n mensajes
-            if history and len(history) > 0:
-                recent_history = history[-messages_count:] if messages_count < len(history) else history
-                logger.info(f"Recuperados {len(recent_history)} mensajes del historial de conversación")
-                return recent_history
-            else:
-                logger.info("No hay historial de conversación disponible")
-                return []
-                
-        @self.agent.tool
-        async def remember_current_issue(
-            ctx: RunContext[JiraAgentDependencies],
-            issue_key: str,
-            issue_summary: Optional[str] = None
-        ) -> Dict[str, Any]:
-            """
-            Guarda la issue actual en el contexto para referencia futura.
-            
-            Args:
-                issue_key: Clave de la issue actual (ej. PSIMDESASW-111).
-                issue_summary: Resumen opcional de la issue.
-                
-            Returns:
-                Información sobre la issue guardada.
-            """
-            # Guardar la issue en el contexto
-            ctx.deps.context["current_issue"] = {
-                "key": issue_key,
-                "summary": issue_summary
-            }
-            
-            logger.info(f"Issue {issue_key} guardada como issue actual en el contexto")
-            return {
-                "success": True,
-                "message": f"Issue {issue_key} recordada para futuras referencias"
-            }
-            
-        @self.agent.tool
-        async def get_current_issue(
-            ctx: RunContext[JiraAgentDependencies]
-        ) -> Dict[str, Any]:
-            """
-            Obtiene la issue actual guardada en el contexto.
-            
-            Returns:
-                Información sobre la issue actual o un error si no hay ninguna.
-            """
-            current_issue = ctx.deps.context.get("current_issue")
-            
-            if current_issue:
-                logger.info(f"Recuperada issue actual del contexto: {current_issue['key']}")
-                return {
-                    "success": True,
-                    "issue": current_issue
-                }
-            else:
-                logger.info("No hay issue actual en el contexto")
-                return {
-                    "success": False,
-                    "error": "No hay ninguna issue actual guardada en el contexto"
-                }
-                
-        @self.agent.tool
-        async def get_my_issues(ctx: RunContext[JiraAgentDependencies]) -> List[Dict[str, Any]]:
-            """
-            Obtiene las issues asignadas al usuario actual.
-            
-            Returns:
-                Lista de issues asignadas al usuario actual.
-            """
-            issues = ctx.deps.jira_client.get_my_issues()
-            
-            # Formatear resultados
-            formatted_issues = []
-            for i, issue in enumerate(issues):
-                try:
-                    formatted_issue = {
-                        "index": i + 1,  # índice para referencia humana (comienza en 1)
-                        "key": issue["key"],
-                        "summary": issue["fields"]["summary"],
-                        "status": issue["fields"]["status"]["name"],
-                        "type": issue["fields"]["issuetype"]["name"]
-                    }
-                    formatted_issues.append(formatted_issue)
-                    
-                    # Guardar mapping entre índice y clave para uso futuro
-                    ctx.deps.context.setdefault("issues_by_index", {})[i + 1] = issue["key"]
-                    
-                except Exception as e:
-                    logger.error(f"Error al formatear issue {issue.get('key', 'desconocida')}: {e}")
-                    
-            # Actualizar contexto con últimas issues mostradas
-            ctx.deps.context["last_search_results"] = formatted_issues
-            
-            logger.info(f"Obtenidas {len(formatted_issues)} issues asignadas al usuario")
-            return formatted_issues
-        
-        @self.agent.tool
-        async def search_issues(
-            ctx: RunContext[JiraAgentDependencies], 
-            search_term: str,
-            max_results: Optional[int] = 10
-        ) -> List[Dict[str, Any]]:
-            """
-            Busca issues por texto o clave, sin importar a quién estén asignadas.
-            
-            Args:
-                search_term: Texto para buscar en el título, descripción o clave (ej. "daily", "PSIMDESASW-123").
-                max_results: Número máximo de resultados a devolver.
-                
-            Returns:
-                Lista de issues que coinciden con la búsqueda.
-            """
-            issues = ctx.deps.jira_client.search_issues(search_term, max_results)
-            formatted_issues = []
-            
-            for issue in issues:
-                # Obtener el asignado, si existe
-                assignee = "Sin asignar"
-                if issue["fields"].get("assignee"):
-                    assignee = issue["fields"]["assignee"]["displayName"]
-                
-                formatted_issues.append({
-                    "key": issue["key"],
-                    "summary": issue["fields"]["summary"],
-                    "status": issue["fields"]["status"]["name"],
-                    "assignee": assignee
-                })
-            
-            logger.info(f"Búsqueda '{search_term}': Encontradas {len(formatted_issues)} issues")
-            return formatted_issues
-        
-        @self.agent.tool
-        async def smart_search_issues(
-            ctx: RunContext[JiraAgentDependencies], 
-            search_term: str,
-            max_results: Optional[int] = 10
-        ) -> Dict[str, Any]:
-            """
-            Busca issues inteligentemente o resuelve referencias numéricas.
-            1. Si search_term parece una referencia numérica (ej. "opción 1", "la 5"), la resuelve usando el contexto.
-            2. Si no, busca primero en las issues asignadas al usuario que coincidan.
-            3. Si no encuentra coincidencias asignadas, busca en todas las issues.
-            Actualiza el contexto con los resultados de la búsqueda (si no es una referencia).
-            
-            Args:
-                search_term: Texto para buscar, clave de issue, o referencia numérica (ej. "daily", "PSIMDESASW-123", "opción 1").
-                max_results: Número máximo de resultados a devolver en búsquedas generales.
-                
-            Returns:
-                Resultado de la búsqueda/resolución de referencia.
-            """
-            # --- Inicio: Resolución de Referencias Numéricas --- 
-            ref_lower = search_term.lower().strip()
-            index_to_find = None
-            # Extraer número de la referencia si existe
-            if "opción" in ref_lower or "opcion" in ref_lower:
-                parts = ref_lower.split()
-                for part in parts:
-                    if part.isdigit():
-                        index_to_find = int(part)
-                        break
-            # Simplificar referencias ordinales básicas
-            elif ref_lower in ["la primera", "1"]: index_to_find = 1
-            elif ref_lower in ["la segunda", "2"]: index_to_find = 2
-            elif ref_lower in ["la tercera", "3"]: index_to_find = 3
-            elif ref_lower in ["la cuarta", "4"]: index_to_find = 4
-            elif ref_lower in ["la quinta", "5"]: index_to_find = 5
-            # ... (podríamos añadir más si fuera necesario)
-            
-            # Si se encontró un índice, intentar resolver la referencia
-            if index_to_find is not None:
-                if str(index_to_find) in ctx.deps.context["issues_by_index"]:
-                    issue_key = ctx.deps.context["issues_by_index"][str(index_to_find)]
-                    logger.info(f"Referencia '{search_term}' resuelta directamente a issue {issue_key} por smart_search_issues")
-                    # Devolver un formato similar al de una búsqueda, pero indicando que se resolvió por referencia
-                    # Podríamos incluso obtener los detalles aquí, pero mantengámoslo simple por ahora
-                    resolved_issue = next((item for item in ctx.deps.context["last_search_results"] if item["key"] == issue_key), None)
-                    if resolved_issue:
-                         return {
-                             "found_by_reference": True,
-                             "issues": [resolved_issue], # Devolver como lista para consistencia
-                             "total_found": 1,
-                             "search_term": search_term,
-                             "message": f"Referencia '{search_term}' resuelta a la issue {issue_key} ({resolved_issue.get('summary', '')})."
-                         }
-                    else: 
-                         # Si no está en last_search_results (raro), devolver solo la clave
-                          return {
-                             "found_by_reference": True,
-                             "issues": [{"key": issue_key, "index": index_to_find}], 
-                             "total_found": 1,
-                             "search_term": search_term,
-                             "message": f"Referencia '{search_term}' resuelta a la issue {issue_key}."
-                         }
-                else:
-                    # No se encontró el índice en el contexto
-                    available_indices = list(ctx.deps.context["issues_by_index"].keys())
-                    last_search = ctx.deps.context["last_search_term"] or "ninguno"
-                    logger.warning(f"Referencia numérica '{search_term}' no encontrada en el contexto.")
-                    return {
-                        "error": f"No encontré una issue con la referencia '{search_term}'. " +
-                                 f"El último término de búsqueda fue '{last_search}'. " +
-                                 f"Las opciones disponibles eran: {', '.join(available_indices) if available_indices else 'ninguna'}"
-                    }
-            # --- Fin: Resolución de Referencias Numéricas --- 
-            
-            # Si no era una referencia numérica, proceder con la búsqueda normal
-            logger.info(f"'{search_term}' no parece referencia numérica, procediendo con búsqueda normal.")
-            
-            # Guardar el término de búsqueda en el contexto
-            ctx.deps.context["last_search_term"] = search_term
-            
-            # Limpiar mapeo anterior SOLO si es una nueva búsqueda (no referencia)
-            ctx.deps.context["issues_by_index"] = {}
-            ctx.deps.context["last_search_results"] = []
-            
-            # Paso 1: Obtener todas las issues asignadas al usuario
-            my_issues = ctx.deps.jira_client.get_my_issues()
-            
-            # Filtrar las que coinciden con el término de búsqueda
-            filtered_my_issues = []
-            for issue in my_issues:
-                issue_key_lower = issue["key"].lower()
-                summary_lower = issue["fields"]["summary"].lower()
-                search_lower = search_term.lower()
-                
-                # Búsqueda más flexible: clave exacta O término en resumen
-                if issue_key_lower == search_lower or search_lower in summary_lower:
-                    assignee = "Sin asignar"
-                    if issue["fields"].get("assignee"):
-                        assignee = issue["fields"]["assignee"]["displayName"]
-                    
-                    filtered_my_issues.append({
-                        "key": issue["key"],
-                        "summary": issue["fields"]["summary"],
-                        "status": issue["fields"]["status"]["name"],
-                        "assignee": assignee
-                    })
-            
-            # Si encontró issues asignadas al usuario, retornarlas
-            if filtered_my_issues:
-                logger.info(f"Smart búsqueda '{search_term}': Encontradas {len(filtered_my_issues)} issues asignadas al usuario")
-                indexed_issues = []
-                for idx, issue in enumerate(filtered_my_issues[:max_results], 1):
-                    issue_with_index = issue.copy()
-                    issue_with_index["index"] = idx
-                    indexed_issues.append(issue_with_index)
-                    ctx.deps.context["issues_by_index"][str(idx)] = issue["key"]
-                    ctx.deps.context["last_search_results"].append(issue_with_index)
-                
-                return {
-                    "found_in_my_issues": True,
-                    "issues": indexed_issues,
-                    "total_found": len(filtered_my_issues),
-                    "search_term": search_term,
-                    "message": f"Encontré {len(filtered_my_issues)} issues asignadas a ti que coinciden con '{search_term}'."
-                }
-            
-            # Paso 2: Si no encontró issues asignadas, buscar en todas
-            logger.info(f"No se encontraron issues asignadas al usuario con '{search_term}'. Buscando en todas las issues.")
-            all_issues = ctx.deps.jira_client.search_issues(search_term, max_results)
-            
-            formatted_all_issues = []
-            for issue in all_issues:
-                assignee = "Sin asignar"
-                if issue["fields"].get("assignee"):
-                    assignee = issue["fields"]["assignee"]["displayName"]
-                
-                formatted_all_issues.append({
-                    "key": issue["key"],
-                    "summary": issue["fields"]["summary"],
-                    "status": issue["fields"]["status"]["name"],
-                    "assignee": assignee
-                })
-            
-            indexed_all_issues = []
-            for idx, issue in enumerate(formatted_all_issues, 1):
-                issue_with_index = issue.copy()
-                issue_with_index["index"] = idx
-                indexed_all_issues.append(issue_with_index)
-                ctx.deps.context["issues_by_index"][str(idx)] = issue["key"]
-                ctx.deps.context["last_search_results"].append(issue_with_index)
-            
-            logger.info(f"Smart búsqueda '{search_term}': Encontradas {len(formatted_all_issues)} issues en búsqueda global")
-            # Si no se encontraron issues
-            if not indexed_all_issues:
-                 return {
-                    "issues": [],
-                    "total_found": 0,
-                    "search_term": search_term,
-                    "message": f"No encontré ninguna issue que coincida con '{search_term}', ni asignada a ti ni en búsqueda global."
-                }
-                
-            return {
-                "found_in_my_issues": False,
-                "issues": indexed_all_issues,
-                "total_found": len(formatted_all_issues),
-                "search_term": search_term,
-                "message": f"No encontré issues asignadas a ti con '{search_term}', pero encontré {len(formatted_all_issues)} issues en total."
-            }
-        
-        @self.agent.tool
-        async def get_issue_details(ctx: RunContext[JiraAgentDependencies], issue_key: str) -> Dict[str, Any]:
-            """
-            Obtiene los detalles de una issue específica.
-            IMPORTANTE: Esta función requiere la CLAVE EXACTA (ej. PSIMDESASW-111).
-            Si el usuario dio una referencia numérica, smart_search_issues ya debería haberla resuelto.
-            
-            Args:
-                issue_key: Clave EXACTA de la issue (ej. PSIMDESASW-111).
-                
-            Returns:
-                Detalles de la issue.
-            """
-            issue = ctx.deps.jira_client.get_issue_details(issue_key)
-            if not issue:
-                logger.warning(f"Issue no encontrada: {issue_key}")
-                return {"error": f"No se encontró la issue {issue_key}"}
-            
-            try:
-                # Extraer datos relevantes con manejo seguro de valores
-                result = {
-                    "key": issue["key"],
-                    "summary": issue["fields"]["summary"],
-                    "status": issue["fields"]["status"]["name"],
-                    "assignee": "Sin asignar"
-                }
-                
-                # Obtener el asignado de forma segura
-                if issue["fields"].get("assignee") and issue["fields"]["assignee"].get("displayName"):
-                    result["assignee"] = issue["fields"]["assignee"]["displayName"]
-                
-                # Añadir fechas de forma segura
-                if "created" in issue["fields"]:
-                    result["created"] = issue["fields"]["created"]
-                if "updated" in issue["fields"]:
-                    result["updated"] = issue["fields"]["updated"]
-                
-                # Añadir descripción si existe
-                if issue["fields"].get("description"):
-                    result["description"] = issue["fields"]["description"]
-                
-                logger.info(f"Obtenidos detalles de issue {issue_key}")
-                return result
-            except Exception as e:
-                logger.error(f"Error al procesar detalles de la issue {issue_key}: {e}")
-                return {"error": f"Error al procesar detalles de la issue {issue_key}: {str(e)}"}
-        
-        @self.agent.tool
-        async def add_worklog(
-            ctx: RunContext[JiraAgentDependencies],
-            issue_key: str,
-            time_spent_str: str,
-            comment: Optional[str] = None,
-            date_str: Optional[str] = None
-        ) -> Dict[str, Any]:
-            """
-            Agrega un registro de trabajo a una issue específica.
-            IMPORTANTE: Esta función requiere la CLAVE EXACTA de la issue (ej. PSIMDESASW-111). Si el usuario dio un nombre o referencia, usa smart_search_issues primero.
-            
-            Args:
-                issue_key: Clave EXACTA de la issue (ej. PSIMDESASW-111).
-                time_spent_str: Tiempo invertido (ej. "30 minutos", "1.5h", "1 hora 15 min").
-                comment: Comentario opcional.
-                date_str: Fecha del registro (ej. "ayer", "lunes pasado", "2024-05-21"). Si es None, se usa hoy.
-                
-            Returns:
-                Resultado de la operación.
-            """
-            agent_instance = ctx.deps.agent_instance 
-            
-            # Parsear tiempo a SEGUNDOS
-            time_in_seconds = agent_instance._parse_time_str_to_seconds(time_spent_str)
-            if time_in_seconds is None: # Check for None explicitly
-                return {"success": False, "error": f"Formato de tiempo inválido: '{time_spent_str}'. Usa ej. '30m', '1.5h', '2h 15m'"}
-            
-            # Parsear fecha a formato JIRA STARTED
-            started_jira_format = None
-            if date_str:
-                started_jira_format = agent_instance._parse_date_str_to_jira_started_format(date_str)
-                if not started_jira_format:
-                    return {"success": False, "error": f"Formato de fecha inválido: '{date_str}'. Usa 'hoy', 'ayer', 'lunes pasado', 'YYYY-MM-DD'"}
-            else:
-                # Si no se da fecha, usar hoy en formato JIRA
-                started_jira_format = agent_instance._parse_date_str_to_jira_started_format("hoy")
-                if not started_jira_format: # Fallback por si acaso
-                     logger.error("No se pudo parsear 'hoy' a formato Jira started.")
-                     return {"success": False, "error": "Error interno al obtener la fecha de hoy."}
-
-            # Intentar agregar el worklog con los parámetros correctos
-            success = ctx.deps.jira_client.add_worklog(
-                issue_key=issue_key,
-                time_in_sec=time_in_seconds, # Pasar segundos
-                comment=comment,
-                started=started_jira_format # Pasar formato ISO 8601 con offset
-            )
-            
-            if success:
-                logger.info(f"Worklog agregado a {issue_key}: {time_spent_str} ({time_in_seconds}s) para fecha {started_jira_format[:10]}.")
-                return {"success": True, "message": f"Tiempo registrado ({time_spent_str}) en {issue_key} para el día {started_jira_format[:10]}."}
-            else:
-                error_detail = "Error desconocido. Verifica la clave de la issue y tus permisos."
-                logger.error(f"Error al agregar worklog a {issue_key}: {error_detail}")
-                return {"success": False, "error": f"No se pudo registrar el tiempo en {issue_key}. {error_detail}"}
-        
-        @self.agent.tool
-        async def get_issue_worklogs(
-            ctx: RunContext[JiraAgentDependencies],
-            issue_key: str,
-            days_ago: Optional[int] = 7
-        ) -> List[Dict[str, Any]]:
-            """
-            Obtiene los registros de trabajo de una issue en los últimos días.
-            
-            Args:
-                issue_key: Clave de la issue (ej. PSIMDESASW-111).
-                days_ago: Número de días hacia atrás para filtrar los worklogs.
-                
-            Returns:
-                Lista de registros de trabajo.
-            """
-            worklogs = ctx.deps.jira_client.get_issue_worklogs(issue_key)
-            
-            # Convertir a formato más amigable
-            formatted_worklogs = []
-            cutoff_date = datetime.now() - timedelta(days=days_ago)
-            
-            for worklog in worklogs:
-                # Convertir timestamp a datetime
-                started = datetime.fromisoformat(worklog["started"].replace("Z", "+00:00"))
-                
-                # Solo incluir worklogs más recientes que el límite
-                if started >= cutoff_date:
-                    formatted_worklogs.append({
-                        "author": worklog["author"]["displayName"],
-                        "time_spent": worklog["timeSpent"],
-                        "time_spent_seconds": worklog["timeSpentSeconds"],
-                        "started": worklog["started"],
-                        "comment": worklog.get("comment", "")
-                    })
-            
-            logger.info(f"Obtenidos {len(formatted_worklogs)} worklogs para {issue_key}")
-            return formatted_worklogs
-        
-        @self.agent.tool
-        async def get_issue_transitions(
-            ctx: RunContext[JiraAgentDependencies],
-            issue_key: str
-        ) -> List[Dict[str, Any]]:
-            """
-            Obtiene las transiciones disponibles para una issue.
-            
-            Args:
-                issue_key: Clave de la issue (ej. PSIMDESASW-111).
-                
-            Returns:
-                Lista de transiciones disponibles.
-            """
-            transitions = ctx.deps.jira_client.get_issue_transitions(issue_key)
-            
-            # Formato simplificado
-            formatted_transitions = []
-            for transition in transitions:
-                formatted_transitions.append({
-                    "id": transition["id"],
-                    "name": transition["name"],
-                    "to_status": transition["to"]["name"]
-                })
-            
-            logger.info(f"Obtenidas {len(formatted_transitions)} transiciones para {issue_key}")
-            return formatted_transitions
-        
-        @self.agent.tool
-        async def transition_issue(
-            ctx: RunContext[JiraAgentDependencies],
-            issue_key: str,
-            transition_id: str
-        ) -> Dict[str, Any]:
-            """
-            Cambia el estado de una issue.
-            
-            Args:
-                issue_key: Clave de la issue (ej. PSIMDESASW-111).
-                transition_id: ID de la transición.
-                
-            Returns:
-                Resultado de la operación.
-            """
-            success = ctx.deps.jira_client.transition_issue(issue_key, transition_id)
-            
-            if success:
-                # Obtener el nuevo estado
-                issue = ctx.deps.jira_client.get_issue_details(issue_key)
-                new_status = issue["fields"]["status"]["name"] if issue else "desconocido"
-                
-                logger.info(f"Issue {issue_key} transicionada correctamente a {new_status}")
-                return {
-                    "success": True, 
-                    "message": f"Issue {issue_key} cambiada correctamente a estado {new_status}"
-                }
-            else:
-                logger.error(f"Error al transicionar issue {issue_key}")
-                return {
-                    "success": False, 
-                    "error": f"No se pudo cambiar el estado de la issue {issue_key}"
-                }
-        
-        @self.agent.tool
-        async def get_worklogs_by_date(
-            ctx: RunContext[JiraAgentDependencies],
-            target_date: Optional[str] = None,
-            user: Optional[str] = None
-        ) -> Dict[str, Any]:
-            """
-            Obtiene los registros de trabajo para una fecha específica.
-            
-            Args:
-                target_date: Fecha en formato YYYY-MM-DD. Si no se proporciona, se usa la fecha actual.
-                user: Usuario para filtrar. Si no se proporciona, se usa el usuario actual.
-                
-            Returns:
-                Resumen de los registros de trabajo.
-            """
-            # Usar fecha actual si no se proporciona
-            if not target_date:
-                target_date = date.today().isoformat()
-            else:
-                try:
-                    # Validar formato de fecha
-                    date.fromisoformat(target_date)
-                except ValueError:
-                    logger.error(f"Formato de fecha inválido: {target_date}")
-                    return {"success": False, "error": "Formato de fecha inválido. Usa YYYY-MM-DD."}
-            
-            try:
-                # Obtener issues
-                issues = ctx.deps.jira_client.get_my_issues()
-                
-                # Resumen de tiempo
-                total_seconds = 0
-                worklog_summary = []
-                
-                # Procesar cada issue
-                for issue in issues:
-                    issue_key = issue["key"]
-                    worklogs = ctx.deps.jira_client.get_issue_worklogs(issue_key)
-                    
-                    issue_seconds = 0
-                    issue_logs = []
-                    
-                    # Filtrar worklogs por fecha
-                    for worklog in worklogs:
-                        try:
-                            # Convertir timestamp a fecha de forma segura
-                            if "started" in worklog:
-                                worklog_date = datetime.fromisoformat(
-                                    worklog["started"].replace("Z", "+00:00")
-                                ).date().isoformat()
-                                
-                                if worklog_date == target_date:
-                                    seconds = worklog.get("timeSpentSeconds", 0)
-                                    issue_seconds += seconds
-                                    issue_logs.append({
-                                        "time_spent": worklog.get("timeSpent", "desconocido"),
-                                        "seconds": seconds,
-                                        "comment": worklog.get("comment", "")
-                                    })
-                        except Exception as e:
-                            logger.error(f"Error al procesar worklog en {issue_key}: {e}")
-                            continue
-                    
-                    # Solo incluir issues con worklogs en la fecha objetivo
-                    if issue_logs:
-                        try:
-                            worklog_summary.append({
-                                "issue_key": issue_key,
-                                "summary": issue["fields"]["summary"],
-                                "total_seconds": issue_seconds,
-                                "total_formatted": self._format_seconds(issue_seconds),
-                                "logs": issue_logs
-                            })
-                            total_seconds += issue_seconds
-                        except Exception as e:
-                            logger.error(f"Error al añadir resumen de worklog para {issue_key}: {e}")
-                
-                # Calcular horas esperadas (8 horas = 28800 segundos)
-                expected_seconds = 28800
-                missing_seconds = max(0, expected_seconds - total_seconds)
-                
-                result = {
-                    "date": target_date,
-                    "total_seconds": total_seconds,
-                    "total_formatted": self._format_seconds(total_seconds),
-                    "expected_seconds": expected_seconds,
-                    "expected_formatted": "8h",
-                    "missing_seconds": missing_seconds,
-                    "missing_formatted": self._format_seconds(missing_seconds),
-                    "is_complete": total_seconds >= expected_seconds,
-                    "worklogs": worklog_summary
-                }
-                
-                logger.info(f"Obtenido resumen de worklogs para {target_date}")
-                return result
-            except Exception as e:
-                logger.error(f"Error al obtener worklogs para {target_date}: {e}")
-                return {"success": False, "error": f"Error al obtener worklogs: {str(e)}"}
     
     def _parse_time_str_to_seconds(self, time_str: str) -> Optional[int]:
         """Convierte una cadena de tiempo en varios formatos a segundos."""
@@ -967,4 +397,548 @@ class JiraAgent:
                 loop.close()
                 
             except Exception as close_error:
-                logger.warning(f"Error al cerrar el loop asyncio: {close_error}") 
+                logger.warning(f"Error al cerrar el loop asyncio: {close_error}")
+
+    async def add_comment(self, ctx: RunContext[JiraAgentDependencies], issue_key: str, comment: str) -> Dict[str, Any]:
+        """
+        Añade un comentario a una issue de Jira sin registrar tiempo.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            issue_key: La clave de la issue (ej. PSIMDESASW-1234)
+            comment: El comentario a añadir
+            
+        Returns:
+            Un diccionario con el resultado de la operación
+        """
+        try:
+            logger.info(f"Añadiendo comentario a la issue {issue_key}")
+            result = ctx.deps.jira_client.add_comment(issue_key, comment)
+            logger.info(f"Comentario añadido exitosamente a la issue {issue_key}")
+            return {"success": True, "message": f"Comentario añadido exitosamente a la issue {issue_key}"}
+        except Exception as e:
+            error_msg = f"Error al añadir comentario a la issue {issue_key}: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+    async def get_current_time_tracking(self, ctx: RunContext[JiraAgentDependencies], issue_key: str) -> Dict[str, Any]:
+        """
+        Obtiene información detallada sobre el tiempo registrado para la issue especificada.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            issue_key: La clave de la issue de Jira (ej. PSIMDESASW-1234)
+            
+        Returns:
+            Dict[str, Any]: Diccionario con información sobre el tiempo estimado, tiempo gastado y tiempo restante.
+        """
+        try:
+            logger.info(f"Obteniendo información de tiempo para la issue {issue_key}")
+            # Obtener los detalles de tiempo total registrado
+            time_spent_info = ctx.deps.jira_client.get_total_time_spent(issue_key)
+            
+            # Obtener los detalles de la issue para verificar estimaciones
+            issue_details = self._deps.jira_client.get_issue_details(issue_key)
+            
+            result = {
+                "issue_key": issue_key,
+                "success": True,
+                "time_spent": time_spent_info.get("time_spent_seconds", 0),
+                "time_spent_formatted": time_spent_info.get("time_spent_formatted", "0h"),
+                "worklogs_count": time_spent_info.get("worklogs_count", 0)
+            }
+            
+            # Añadir información de tiempo estimado si está disponible
+            if issue_details and "fields" in issue_details:
+                fields = issue_details["fields"]
+                
+                # Obtener tiempo original estimado (si existe)
+                if "timeoriginalestimate" in fields and fields["timeoriginalestimate"]:
+                    original_estimate_seconds = fields["timeoriginalestimate"]
+                    result["original_estimate_seconds"] = original_estimate_seconds
+                    result["original_estimate_formatted"] = self._format_seconds(original_estimate_seconds)
+                
+                # Obtener tiempo restante estimado (si existe)
+                if "timeestimate" in fields and fields["timeestimate"]:
+                    remaining_estimate_seconds = fields["timeestimate"]
+                    result["remaining_estimate_seconds"] = remaining_estimate_seconds
+                    result["remaining_estimate_formatted"] = self._format_seconds(remaining_estimate_seconds)
+            
+            logger.info(f"Información de tiempo obtenida correctamente para {issue_key}")
+            return result
+            
+        except Exception as e:
+            error_msg = f"Error al obtener información de tiempo para {issue_key}: {str(e)}"
+            logger.error(error_msg)
+            return {
+                "issue_key": issue_key,
+                "success": False,
+                "error": error_msg
+            }
+
+    async def get_conversation_history(self, ctx: RunContext[JiraAgentDependencies]) -> List[Dict[str, str]]:
+        """
+        Obtiene el historial reciente de la conversación.
+        
+        Returns:
+            List[Dict[str, str]]: Lista de mensajes de la conversación.
+        """
+        history = ctx.deps.context.get("conversation_history", [])
+        logger.info(f"Obtenido historial de conversación: {len(history)} mensajes")
+        return history
+
+    async def remember_current_issue(self, ctx: RunContext[JiraAgentDependencies], issue_key: str) -> Dict[str, Any]:
+        """
+        Guarda la issue actual en la memoria para futuras referencias.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            issue_key: Clave de la issue (ej. PSIMDESASW-1234)
+            
+        Returns:
+            Dict[str, Any]: Resultado de la operación.
+        """
+        logger.info(f"Guardando issue actual: {issue_key}")
+        ctx.deps.context["current_issue"] = issue_key
+        return {"success": True, "message": f"Issue {issue_key} guardada como issue actual"}
+    
+    async def get_current_issue(self, ctx: RunContext[JiraAgentDependencies]) -> Dict[str, Any]:
+        """
+        Obtiene la issue actualmente guardada en memoria.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            
+        Returns:
+            Dict[str, Any]: Información sobre la issue actual o un mensaje de error.
+        """
+        current_issue = ctx.deps.context.get("current_issue")
+        if current_issue:
+            logger.info(f"Obtenida issue actual: {current_issue}")
+            return {"success": True, "issue_key": current_issue}
+        else:
+            logger.info("No hay issue actual guardada")
+            return {"success": False, "error": "No hay ninguna issue seleccionada actualmente"}
+    
+    async def get_my_issues(self, ctx: RunContext[JiraAgentDependencies]) -> Dict[str, Any]:
+        """
+        Obtiene las issues asignadas al usuario actual en Jira.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            
+        Returns:
+            Dict[str, Any]: Lista de issues asignadas al usuario.
+        """
+        try:
+            logger.info("Obteniendo issues asignadas al usuario")
+            issues = ctx.deps.jira_client.get_my_issues()
+            
+            # Guardar resultado en el contexto para referencias posteriores
+            ctx.deps.context["last_search_results"] = issues
+            
+            formatted_issues = []
+            for i, issue in enumerate(issues):
+                issue_key = issue.get("key", "Sin clave")
+                summary = issue.get("fields", {}).get("summary", "Sin título")
+                status = issue.get("fields", {}).get("status", {}).get("name", "Sin estado")
+                priority = issue.get("fields", {}).get("priority", {}).get("name", "Sin prioridad")
+                
+                formatted_issues.append({
+                    "option": i + 1,
+                    "key": issue_key,
+                    "summary": summary,
+                    "status": status,
+                    "priority": priority
+                })
+            
+            logger.info(f"Obtenidas {len(formatted_issues)} issues asignadas al usuario")
+            return {
+                "success": True,
+                "count": len(formatted_issues),
+                "issues": formatted_issues
+            }
+            
+        except Exception as e:
+            error_msg = f"Error al obtener issues asignadas: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    async def search_issues(self, ctx: RunContext[JiraAgentDependencies], search_term: str, max_results: int = 10) -> Dict[str, Any]:
+        """
+        Busca issues en Jira basado en un término de búsqueda.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            search_term: Término de búsqueda.
+            max_results: Número máximo de resultados (por defecto 10).
+            
+        Returns:
+            Dict[str, Any]: Resultados de la búsqueda.
+        """
+        try:
+            logger.info(f"Buscando issues con término: '{search_term}'")
+            issues = ctx.deps.jira_client.search_issues(search_term, max_results)
+            
+            # Guardar resultado en el contexto para referencias posteriores
+            ctx.deps.context["last_search_results"] = issues
+            
+            formatted_issues = []
+            for i, issue in enumerate(issues):
+                issue_key = issue.get("key", "Sin clave")
+                summary = issue.get("fields", {}).get("summary", "Sin título")
+                status = issue.get("fields", {}).get("status", {}).get("name", "Sin estado")
+                priority = issue.get("fields", {}).get("priority", {}).get("name", "Sin prioridad")
+                
+                formatted_issues.append({
+                    "option": i + 1,
+                    "key": issue_key,
+                    "summary": summary,
+                    "status": status,
+                    "priority": priority
+                })
+            
+            logger.info(f"Búsqueda completada: {len(formatted_issues)} issues encontradas")
+            return {
+                "success": True,
+                "count": len(formatted_issues),
+                "search_term": search_term,
+                "issues": formatted_issues
+            }
+            
+        except Exception as e:
+            error_msg = f"Error al buscar issues: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    async def smart_search_issues(self, ctx: RunContext[JiraAgentDependencies], query: str, max_results: int = 10) -> Dict[str, Any]:
+        """
+        Busca issues en Jira de manera inteligente, combinando búsqueda por términos y filtrado.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            query: Consulta de búsqueda, puede incluir términos como 'asignadas a mí', 'en progreso', etc.
+            max_results: Número máximo de resultados (por defecto 10).
+            
+        Returns:
+            Dict[str, Any]: Resultados de la búsqueda inteligente.
+        """
+        try:
+            logger.info(f"Búsqueda inteligente de issues: '{query}'")
+            
+            # Determinar si la consulta es para issues asignadas al usuario
+            if re.search(r'(mis issues|asignadas a m[íi]|mis tareas)', query.lower()):
+                # Si se piden las issues del usuario, usar get_my_issues
+                logger.info("Detectada consulta de issues propias")
+                return await self.get_my_issues(ctx)
+            
+            # En otros casos, realizar búsqueda normal
+            logger.info("Realizando búsqueda estándar")
+            return await self.search_issues(ctx, query, max_results)
+            
+        except Exception as e:
+            error_msg = f"Error en búsqueda inteligente: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+    async def get_issue_by_reference(self, ctx: RunContext[JiraAgentDependencies], reference: str) -> Dict[str, Any]:
+        """
+        Obtiene la clave de una issue basada en una referencia del usuario.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            reference: Referencia como "opción 1", "la primera", etc.
+            
+        Returns:
+            Dict[str, Any]: Información de la issue referenciada o error.
+        """
+        try:
+            logger.info(f"Buscando issue por referencia: '{reference}'")
+            last_results = ctx.deps.context.get("last_search_results", [])
+            
+            if not last_results:
+                return {"success": False, "error": "No hay resultados de búsqueda recientes para referenciar"}
+            
+            # Intentar identificar un número de opción en la referencia
+            option_match = re.search(r'(?:opción|opcion|option|número|numero|number)?\s*(\d+)', reference.lower())
+            first_match = re.search(r'(primera|primer|first)', reference.lower())
+            last_match = re.search(r'(última|ultimo|last)', reference.lower())
+            
+            selected_index = None
+            
+            if option_match:
+                # Opción por número
+                option_num = int(option_match.group(1))
+                if 1 <= option_num <= len(last_results):
+                    selected_index = option_num - 1
+            elif first_match:
+                # Primera opción
+                selected_index = 0
+            elif last_match:
+                # Última opción
+                selected_index = len(last_results) - 1
+            else:
+                # Intentar buscar por término exacto en el título o descripción
+                for i, issue in enumerate(last_results):
+                    summary = issue.get("fields", {}).get("summary", "").lower()
+                    key = issue.get("key", "").lower()
+                    
+                    if reference.lower() in summary or reference.lower() in key:
+                        selected_index = i
+                        break
+            
+            if selected_index is not None:
+                issue = last_results[selected_index]
+                issue_key = issue.get("key")
+                summary = issue.get("fields", {}).get("summary", "Sin título")
+                
+                logger.info(f"Referencia resuelta a issue: {issue_key} ({summary})")
+                return {
+                    "success": True,
+                    "issue_key": issue_key,
+                    "summary": summary
+                }
+            else:
+                return {"success": False, "error": f"No se pudo identificar una issue con la referencia '{reference}'"}
+                
+        except Exception as e:
+            error_msg = f"Error al resolver referencia de issue: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+            
+    async def get_issue_details(self, ctx: RunContext[JiraAgentDependencies], issue_key: str) -> Dict[str, Any]:
+        """
+        Obtiene detalles completos de una issue específica de Jira.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            issue_key: Clave de la issue (ej. PSIMDESASW-1234)
+            
+        Returns:
+            Dict[str, Any]: Detalles de la issue o error.
+        """
+        try:
+            logger.info(f"Obteniendo detalles de issue: {issue_key}")
+            issue = ctx.deps.jira_client.get_issue_details(issue_key)
+            
+            if not issue:
+                return {"success": False, "error": f"No se pudo encontrar la issue {issue_key}"}
+            
+            # Extraer campos importantes para la respuesta
+            fields = issue.get("fields", {})
+            
+            formatted_issue = {
+                "key": issue_key,
+                "summary": fields.get("summary", "Sin título"),
+                "description": fields.get("description", "Sin descripción"),
+                "status": fields.get("status", {}).get("name", "Sin estado"),
+                "priority": fields.get("priority", {}).get("name", "Sin prioridad"),
+                "assignee": fields.get("assignee", {}).get("displayName", "Sin asignar"),
+                "reporter": fields.get("reporter", {}).get("displayName", "Sin reportador"),
+                "created": fields.get("created", "Fecha desconocida"),
+                "updated": fields.get("updated", "Fecha desconocida"),
+                "issuetype": fields.get("issuetype", {}).get("name", "Sin tipo")
+            }
+            
+            logger.info(f"Detalles obtenidos para issue {issue_key}")
+            return {
+                "success": True,
+                "issue": formatted_issue
+            }
+            
+        except Exception as e:
+            error_msg = f"Error al obtener detalles de issue {issue_key}: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    async def get_issue_worklogs(self, ctx: RunContext[JiraAgentDependencies], issue_key: str) -> Dict[str, Any]:
+        """
+        Obtiene los registros de trabajo (worklogs) de una issue específica de Jira.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            issue_key: Clave de la issue (ej. PSIMDESASW-1234)
+            
+        Returns:
+            Dict[str, Any]: Lista de worklogs de la issue o error.
+        """
+        try:
+            logger.info(f"Obteniendo worklogs de issue: {issue_key}")
+            worklogs = ctx.deps.jira_client.get_issue_worklogs(issue_key)
+            
+            formatted_worklogs = []
+            total_seconds = 0
+            
+            for worklog in worklogs:
+                author = worklog.get("author", {}).get("displayName", "Usuario desconocido")
+                time_spent = worklog.get("timeSpentSeconds", 0)
+                started = worklog.get("started", "Fecha desconocida")
+                comment = worklog.get("comment", "Sin comentario")
+                
+                total_seconds += time_spent
+                
+                formatted_worklogs.append({
+                    "author": author,
+                    "time_spent": self._format_seconds(time_spent),
+                    "started": started,
+                    "comment": comment
+                })
+            
+            logger.info(f"Obtenidos {len(formatted_worklogs)} worklogs para issue {issue_key}")
+            return {
+                "success": True,
+                "count": len(formatted_worklogs),
+                "total_time": self._format_seconds(total_seconds),
+                "worklogs": formatted_worklogs
+            }
+            
+        except Exception as e:
+            error_msg = f"Error al obtener worklogs de issue {issue_key}: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    async def add_worklog(self, ctx: RunContext[JiraAgentDependencies], issue_key: str, time_str: str, comment: Optional[str] = None, date_str: Optional[str] = "hoy") -> Dict[str, Any]:
+        """
+        Agrega un registro de trabajo (worklog) a una issue de Jira.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            issue_key: Clave de la issue (ej. PSIMDESASW-1234)
+            time_str: Tiempo invertido en formato legible (ej. "1h 30m", "90m", "1.5h")
+            comment: Comentario para el worklog (opcional)
+            date_str: Fecha del trabajo en formato legible (ej. "hoy", "ayer", "2023-04-22")
+            
+        Returns:
+            Dict[str, Any]: Resultado de la operación o error.
+        """
+        try:
+            logger.info(f"Agregando worklog a issue {issue_key}: {time_str}, '{comment}', fecha={date_str}")
+            
+            # Convertir tiempo a segundos
+            time_in_sec = self._parse_time_str_to_seconds(time_str)
+            if not time_in_sec:
+                return {"success": False, "error": f"Formato de tiempo no válido: '{time_str}'"}
+            
+            # Convertir fecha a formato Jira (si se proporciona)
+            started = None
+            if date_str:
+                started = self._parse_date_str_to_jira_started_format(date_str)
+                if not started:
+                    return {"success": False, "error": f"Formato de fecha no válido: '{date_str}'"}
+            
+            # Agregar worklog
+            result = ctx.deps.jira_client.add_worklog(
+                issue_key=issue_key,
+                time_in_sec=time_in_sec,
+                comment=comment,
+                started=started
+            )
+            
+            if result:
+                logger.info(f"Worklog agregado correctamente a {issue_key}")
+                return {
+                    "success": True,
+                    "message": f"Tiempo registrado correctamente en {issue_key}: {self._format_seconds(time_in_sec)}",
+                    "issue_key": issue_key,
+                    "time": self._format_seconds(time_in_sec),
+                    "date": date_str
+                }
+            else:
+                error_msg = f"Error al agregar worklog a {issue_key}"
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg}
+            
+        except Exception as e:
+            error_msg = f"Error al agregar worklog a {issue_key}: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    async def get_issue_transitions(self, ctx: RunContext[JiraAgentDependencies], issue_key: str) -> Dict[str, Any]:
+        """
+        Obtiene las transiciones disponibles para una issue específica de Jira.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            issue_key: Clave de la issue (ej. PSIMDESASW-1234)
+            
+        Returns:
+            Dict[str, Any]: Lista de transiciones disponibles o error.
+        """
+        try:
+            logger.info(f"Obteniendo transiciones para issue: {issue_key}")
+            transitions = ctx.deps.jira_client.get_issue_transitions(issue_key)
+            
+            formatted_transitions = []
+            for transition in transitions:
+                transition_id = transition.get("id")
+                transition_name = transition.get("name", "Sin nombre")
+                
+                formatted_transitions.append({
+                    "id": transition_id,
+                    "name": transition_name
+                })
+            
+            logger.info(f"Obtenidas {len(formatted_transitions)} transiciones para issue {issue_key}")
+            return {
+                "success": True,
+                "count": len(formatted_transitions),
+                "transitions": formatted_transitions
+            }
+            
+        except Exception as e:
+            error_msg = f"Error al obtener transiciones de issue {issue_key}: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    async def transition_issue(self, ctx: RunContext[JiraAgentDependencies], issue_key: str, transition_name: str) -> Dict[str, Any]:
+        """
+        Cambia el estado de una issue de Jira utilizando una transición disponible.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            issue_key: Clave de la issue (ej. PSIMDESASW-1234)
+            transition_name: Nombre de la transición a aplicar
+            
+        Returns:
+            Dict[str, Any]: Resultado de la operación o error.
+        """
+        try:
+            logger.info(f"Aplicando transición '{transition_name}' a issue {issue_key}")
+            
+            # Primero obtener las transiciones disponibles
+            transitions_result = await self.get_issue_transitions(ctx, issue_key)
+            
+            if not transitions_result.get("success", False):
+                return transitions_result
+            
+            # Buscar la transición por nombre
+            transition_id = None
+            for transition in transitions_result.get("transitions", []):
+                if transition["name"].lower() == transition_name.lower():
+                    transition_id = transition["id"]
+                    break
+            
+            if not transition_id:
+                return {
+                    "success": False,
+                    "error": f"No se encontró la transición '{transition_name}' para la issue {issue_key}"
+                }
+            
+            # Aplicar la transición
+            result = ctx.deps.jira_client.transition_issue(issue_key, transition_id)
+            
+            if result:
+                logger.info(f"Transición aplicada correctamente a {issue_key}")
+                return {
+                    "success": True,
+                    "message": f"Estado de la issue {issue_key} cambiado a '{transition_name}'"
+                }
+            else:
+                error_msg = f"Error al aplicar transición a {issue_key}"
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg}
+            
+        except Exception as e:
+            error_msg = f"Error al cambiar estado de issue {issue_key}: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg} 
