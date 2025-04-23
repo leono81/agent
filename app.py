@@ -41,7 +41,8 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     # Verificar que las variables de entorno están configuradas
-    required_vars = ["JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN", "OPENAI_API_KEY"]
+    required_vars = ["JIRA_URL", "JIRA_USERNAME", "JIRA_API_TOKEN", "OPENAI_API_KEY", 
+                     "CONFLUENCE_URL", "CONFLUENCE_USERNAME", "CONFLUENCE_API_TOKEN"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
@@ -52,14 +53,14 @@ def main():
         print("Puedes usar env.example como referencia.")
         return
     
-    # Ejecutar la aplicación Streamlit
-    print("Iniciando la aplicación Jira Agent...")
+    # Ejecutar la aplicación Streamlit con el orquestador
+    print("Iniciando el Asistente Atlassian con orquestador...")
     
     try:
         # Usar Popen en lugar de run para tener más control sobre el proceso
         global streamlit_process
         streamlit_process = subprocess.Popen(
-            ["streamlit", "run", "app/ui/app.py"],
+            ["streamlit", "run", "orchestrator_app.py"],
             # Redirigir la salida estándar y de error al proceso principal
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
