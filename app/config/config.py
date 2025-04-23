@@ -9,6 +9,11 @@ JIRA_URL = os.getenv("JIRA_URL", "https://your-jira-instance.atlassian.net")
 JIRA_USERNAME = os.getenv("JIRA_USERNAME", "your-email@example.com")
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN", "your-api-token")
 
+# Configuración para la API de Confluence
+CONFLUENCE_URL = os.getenv("CONFLUENCE_URL", "https://your-confluence-instance.atlassian.net")
+CONFLUENCE_USERNAME = os.getenv("CONFLUENCE_USERNAME", "your-email@example.com")
+CONFLUENCE_API_TOKEN = os.getenv("CONFLUENCE_API_TOKEN", "your-api-token")
+
 # Configuración para OpenAI
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-openai-api-key")
 

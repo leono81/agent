@@ -31,3 +31,34 @@ class AgentResponse(BaseModel):
     message: str = Field(description="Mensaje para mostrar al usuario")
     success: bool = Field(description="Indica si la operación fue exitosa", default=True)
     data: Optional[dict] = Field(description="Datos adicionales de la respuesta", default=None) 
+
+# Modelos para el agente de Confluence
+
+class ConfluenceSpace(BaseModel):
+    """Modelo para representar un espacio de Confluence."""
+    key: str = Field(description="Clave única del espacio (ej. PSIMDESASW)")
+    name: str = Field(description="Nombre del espacio")
+    description: Optional[str] = Field(description="Descripción del espacio", default=None)
+
+
+class ConfluencePage(BaseModel):
+    """Modelo para representar una página de Confluence."""
+    id: str = Field(description="ID único de la página")
+    title: str = Field(description="Título de la página")
+    space_key: str = Field(description="Clave del espacio al que pertenece la página")
+    url: Optional[str] = Field(description="URL de la página", default=None)
+    content: Optional[str] = Field(description="Contenido de la página en texto plano", default=None)
+    excerpt: Optional[str] = Field(description="Extracto del contenido", default=None)
+
+
+class SearchResult(BaseModel):
+    """Modelo para representar un resultado de búsqueda en Confluence."""
+    id: str = Field(description="ID único del contenido")
+    title: str = Field(description="Título del contenido")
+    url: str = Field(description="URL del contenido")
+    space_key: str = Field(description="Clave del espacio al que pertenece")
+    space_name: str = Field(description="Nombre del espacio al que pertenece")
+    content_type: str = Field(description="Tipo de contenido (page, blogpost, etc.)")
+    excerpt: Optional[str] = Field(description="Extracto del contenido", default=None)
+    extracted_text: Optional[str] = Field(description="Texto extraído del contenido", default=None)
+    last_modified: Optional[str] = Field(description="Fecha de última modificación", default=None) 
