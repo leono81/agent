@@ -42,6 +42,11 @@ class ConfluenceClient:
                 cloud=True  # La mayoría de las instancias de Confluence actuales son en la nube
             )
             
+            # Guardar la URL base para construcción de enlaces completos
+            self.base_url = CONFLUENCE_URL.rstrip("/")
+            if not self.base_url.endswith("/wiki"):
+                self.base_url += "/wiki"
+            
             # Inicializar sistema de caché para mejorar rendimiento
             self._cache = {}
             self._cache_expiry = cache_expiry_seconds
@@ -82,6 +87,25 @@ class ConfluenceClient:
         """
         self._cache[key] = (time.time(), value)
         logger.debug(f"Almacenado en caché: {key}")
+
+    def _get_full_url(self, relative_url: str) -> str:
+        """
+        Convierte una URL relativa en una URL completa.
+        
+        Args:
+            relative_url: URL relativa que puede comenzar con "/" o no.
+            
+        Returns:
+            str: URL completa.
+        """
+        if not relative_url:
+            return ""
+            
+        # Asegurarse de que la URL relativa comienza con "/"
+        if not relative_url.startswith("/"):
+            relative_url = "/" + relative_url
+            
+        return f"{self.base_url}{relative_url}"
     
     def get_all_spaces(self, use_cache: bool = True) -> List[Dict[str, Any]]:
         """
@@ -169,6 +193,11 @@ class ConfluenceClient:
             
             if 'page' in content and 'results' in content['page']:
                 result = content['page']['results']
+                # Añadir URLs completas
+                for item in result:
+                    if '_links' in item and 'webui' in item['_links']:
+                        item['_links']['webui_full'] = self._get_full_url(item['_links']['webui'])
+                
                 logger.info(f"Obtenidos {len(result)} elementos de contenido en el espacio {space_key}")
                 self._cache_set(cache_key, result)
                 return result
@@ -217,6 +246,11 @@ class ConfluenceClient:
             
             if 'results' in results:
                 search_results = results['results']
+                # Añadir URLs completas
+                for result in search_results:
+                    if 'url' in result:
+                        result['full_url'] = self._get_full_url(result['url'])
+                
                 logger.info(f"Búsqueda '{query}': Encontrados {len(search_results)} resultados")
                 self._cache_set(cache_key, search_results)
                 return search_results
@@ -246,6 +280,10 @@ class ConfluenceClient:
         
         try:
             page = self.confluence.get_page_by_id(page_id=page_id, expand="body.storage,version")
+            # Añadir URL completa
+            if '_links' in page and 'webui' in page['_links']:
+                page['_links']['webui_full'] = self._get_full_url(page['_links']['webui'])
+            
             logger.info(f"Obtenida página con ID: {page_id}")
             self._cache_set(cache_key, page)
             return page
@@ -274,6 +312,10 @@ class ConfluenceClient:
         try:
             page = self.confluence.get_page_by_title(space=space_key, title=title, expand="body.storage,version")
             if page:
+                # Añadir URL completa
+                if '_links' in page and 'webui' in page['_links']:
+                    page['_links']['webui_full'] = self._get_full_url(page['_links']['webui'])
+                
                 logger.info(f"Obtenida página '{title}' en el espacio {space_key}")
                 self._cache_set(cache_key, page)
                 return page
@@ -339,11 +381,16 @@ class ConfluenceClient:
                         # Extraer texto plano para facilitar el procesamiento
                         extracted_text = self.extract_content_from_page(page)
                         
+                        # Obtener URL completa
+                        url = result.get('url', '')
+                        full_url = result.get('full_url', self._get_full_url(url))
+                        
                         # Crear objeto de resultado enriquecido
                         enriched_result = {
                             'id': content_id,
                             'title': result.get('content', {}).get('title', 'Sin título'),
-                            'url': result.get('url', ''),
+                            'url': url,
+                            'full_url': full_url,
                             'content_type': result.get('content', {}).get('type', 'unknown'),
                             'excerpt': result.get('excerpt', ''),
                             'space_name': result.get('content', {}).get('space', {}).get('name', 'Espacio desconocido'),
