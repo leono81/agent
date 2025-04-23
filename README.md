@@ -14,6 +14,9 @@ Un agente conversacional para gestionar Jira y Confluence utilizando IA.
 - **Interfaz conversacional** - Interactúa con Jira y Confluence utilizando lenguaje natural
 - **IA avanzada** - Utiliza modelos de OpenAI para procesar consultas en lenguaje natural
 - **Persistencia de contexto** - Mantiene el contexto de la conversación entre agentes
+- **Gestión de fechas** - Manejo avanzado de fechas en español con detección automática de la fecha actual
+- **Corrección de confusiones** - Sistema inteligente para detectar y corregir confusiones con fechas
+- **Interfaz en español** - Localización completa de la interfaz, incluyendo formato de fechas en español
 
 ## Requisitos
 
@@ -146,6 +149,19 @@ El orquestador es responsable de:
 - Mantener la coherencia de la conversación
 - Gestionar transiciones entre temas
 - Conservar el contexto entre diferentes agentes
+- Manejar información de fecha actual
+- Corregir confusiones con fechas
+
+## Sistema de manejo de fechas
+
+El sistema implementa un manejo avanzado de fechas con las siguientes características:
+
+1. **Detección automática de fecha actual**: El sistema detecta y mantiene la fecha actual en todas las interacciones.
+2. **Formato localizado**: Las fechas se formatean en español utilizando el formato "día de mes de año".
+3. **Contexto compartido**: La fecha actual se mantiene en el contexto compartido y se actualiza en cada interacción.
+4. **Corrección de confusiones**: El sistema detecta y corrige confusiones con fechas específicas (como "3 de noviembre de 2023").
+5. **Prompts enriquecidos**: Los prompts de sistema de los agentes incluyen la fecha actual para mejorar el contexto.
+6. **Mappeo manual de meses y días**: Implementa un sistema de mapeo manual para asegurar la localización correcta.
 
 ## Desarrollo
 
@@ -155,3 +171,11 @@ Para agregar nuevos agentes:
 1. Crea un nuevo archivo en el directorio `app/agents/`
 2. Implementa la interfaz estándar con el método `process_message_sync`
 3. Actualiza el orquestador para reconocer y delegar al nuevo agente 
+
+### Ampliación del sistema
+
+El sistema está diseñado para ser ampliado con:
+- Soporte para más idiomas
+- Integración con otros servicios de Atlassian
+- Funcionalidades adicionales como creación de contenido
+- Personalización de la interfaz de usuario 

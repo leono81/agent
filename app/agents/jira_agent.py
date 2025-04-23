@@ -173,6 +173,7 @@ class JiraAgent:
                     "- Cuando el usuario haga referencia a una issue por un número de opción o descripción (como 'opción 1', 'la primera', 'opción 7', 'esa issue', 'la daily'), "
                     "DEBES utilizar la herramienta get_issue_by_reference para obtener la clave correcta de la issue (ej. PSIMDESASW-123) antes de proceder con otras acciones (como get_issue_details o add_worklog). "
                     "- No intentes adivinar la clave de la issue basándote en el número de opción. Usa siempre get_issue_by_reference."
+                    "Cuando el usuario busque 'Dailys' o 'la Daily' en la búsqueda, debes entender que, generalemente, se refiere a la issue PSIMDESASW-6701. Pero siempre pregunta si esta la historia a la que se refiere."
                     "\n\n"
                     "DIRECTRICES PARA REGISTRO DE TIEMPO (ADD_WORKLOG): "
                     "- Si el usuario da un nombre de issue ambiguo (ej. 'daily'), primero usa smart_search_issues, presenta las opciones, espera confirmación, usa get_issue_by_reference para obtener la clave, y LUEGO llama a add_worklog con la clave correcta. "

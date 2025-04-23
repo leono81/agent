@@ -128,6 +128,7 @@ def process_message(message):
     
     # Mostrar indicador de espera
     with st.chat_message("assistant"):
+        message_placeholder = st.empty()
         with st.spinner("Pensando..."):
             try:
                 # Obtener respuesta del agente
@@ -138,18 +139,18 @@ def process_message(message):
                 # Agregar respuesta del agente al estado
                 st.session_state.messages.append({"role": "assistant", "content": response})
                 
-                # Mostrar la respuesta
-                st.markdown(response)
+                # Mostrar la respuesta en el placeholder
+                message_placeholder.markdown(response)
             except KeyboardInterrupt:
                 logger.warning("Procesamiento interrumpido por el usuario")
                 error_msg = "El procesamiento fue interrumpido. Por favor, intenta nuevamente."
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                st.markdown(error_msg)
+                message_placeholder.markdown(error_msg)
             except Exception as e:
                 logger.error(f"Error al procesar mensaje: {e}")
                 error_msg = f"Lo siento, ha ocurrido un error: {str(e)}"
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                st.markdown(error_msg)
+                message_placeholder.markdown(error_msg)
 
 # Input para mensaje del usuario
 if prompt := st.chat_input("Escribe tu mensaje aquí..."):
