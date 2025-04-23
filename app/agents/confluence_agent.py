@@ -160,7 +160,7 @@ class ConfluenceAgent:
                     "- Utiliza get_page_details para obtener el contenido completo del documento más relevante. "
                     "- Resume la información de manera clara y concisa, destacando los pasos principales. "
                     "- Si el contenido está en inglés y el usuario pregunta en español (o viceversa), traduce la información a la misma lengua en la que preguntó el usuario. "
-                    "- Siempre incluye un enlace a la documentación original para que el usuario pueda consultarla directamente si lo desea."
+                    "- SIEMPRE incluye el enlace completo a la documentación original en algún punto de tu respuesta de forma natural, por ejemplo: 'Puedes ver la documentación completa aquí: [URL]' o 'Para más detalles, consulta: [URL]'."
                     "\n\n"
                     "ESPACIOS DISPONIBLES: "
                     "- Este agente está configurado para buscar en los espacios: PSIMDESASW, ITIndustrial. "
@@ -281,14 +281,24 @@ class ConfluenceAgent:
         Returns:
             Dict[str, Any]: Información de la página guardada.
         """
+        # Obtener URL completa si es relativa
+        full_url = url
+        if not (url.startswith('http://') or url.startswith('https://')):
+            full_url = ctx.deps.confluence_client._get_full_url(url)
+        
         current_page = {
             "id": page_id,
             "title": title,
-            "url": url
+            "url": url,
+            "full_url": full_url
         }
         ctx.deps.context["current_page"] = current_page
         logger.info(f"Página actual guardada en memoria: {title} (ID: {page_id})")
-        return {"success": True, "message": f"Página '{title}' guardada como referencia actual", "page": current_page}
+        return {
+            "success": True, 
+            "message": f"Página '{title}' guardada como referencia actual", 
+            "page": current_page
+        }
     
     async def get_current_page(self, ctx: RunContext[ConfluenceAgentDependencies]) -> Dict[str, Any]:
         """
@@ -360,11 +370,16 @@ class ConfluenceAgent:
                 # Formatear la información del contenido
                 formatted_content = []
                 for i, item in enumerate(content, 1):
+                    # Obtener URL completa si está disponible
+                    url = item.get("_links", {}).get("webui", "")
+                    full_url = item.get("_links", {}).get("webui_full", ctx.deps.confluence_client._get_full_url(url))
+                    
                     formatted_item = {
                         "index": i,
                         "id": item.get("id", ""),
                         "title": item.get("title", ""),
-                        "url": item.get("_links", {}).get("webui", "")
+                        "url": url,
+                        "full_url": full_url
                     }
                     formatted_content.append(formatted_item)
                 
@@ -406,11 +421,16 @@ class ConfluenceAgent:
                 # Formatear los resultados
                 formatted_results = []
                 for i, result in enumerate(results, 1):
+                    # Obtener URL completa
+                    url = result.get('url', '')
+                    full_url = result.get('full_url', ctx.deps.confluence_client._get_full_url(url))
+                    
                     formatted_result = {
                         "index": i,
                         "id": result.get("content", {}).get("id", ""),
                         "title": result.get("content", {}).get("title", ""),
-                        "url": result.get("url", ""),
+                        "url": url,
+                        "full_url": full_url,
                         "space_key": result.get("content", {}).get("space", {}).get("key", ""),
                         "space_name": result.get("content", {}).get("space", {}).get("name", ""),
                         "excerpt": result.get("excerpt", "")
@@ -458,11 +478,17 @@ class ConfluenceAgent:
                 # Formatear los resultados
                 formatted_results = []
                 for i, result in enumerate(results, 1):
+                    # Asegurar que tenemos una URL completa
+                    full_url = result.get("full_url", "")
+                    if not full_url:
+                        full_url = ctx.deps.confluence_client._get_full_url(result.get("url", ""))
+                    
                     formatted_result = {
                         "index": i,
                         "id": result.get("id", ""),
                         "title": result.get("title", ""),
                         "url": result.get("url", ""),
+                        "full_url": full_url,
                         "space_key": result.get("space_key", ""),
                         "space_name": result.get("space_name", ""),
                         "excerpt": result.get("excerpt", ""),
@@ -566,11 +592,16 @@ class ConfluenceAgent:
                 # Extraer texto plano del contenido
                 extracted_text = ctx.deps.confluence_client.extract_content_from_page(page)
                 
+                # Obtener URL completa
+                url = page.get("_links", {}).get("webui", "")
+                full_url = page.get("_links", {}).get("webui_full", ctx.deps.confluence_client._get_full_url(url))
+                
                 # Formatear la información de la página
                 formatted_page = {
                     "id": page.get("id", ""),
                     "title": page.get("title", ""),
-                    "url": page.get("_links", {}).get("webui", "") if "_links" in page else "",
+                    "url": url,
+                    "full_url": full_url,
                     "space_key": page.get("space", {}).get("key", "") if "space" in page else "",
                     "space_name": page.get("space", {}).get("name", "") if "space" in page else "",
                     "content": extracted_text,
@@ -581,7 +612,7 @@ class ConfluenceAgent:
                 logger.info(f"Obtenidos detalles de la página: {formatted_page.get('title')} (ID: {page_id})")
                 
                 # Guardar la página actual en el contexto
-                await self.remember_current_page(ctx, page_id, formatted_page.get("title"), formatted_page.get("url"))
+                await self.remember_current_page(ctx, page_id, formatted_page.get("title"), formatted_page.get("full_url"))
                 
                 return {"success": True, "message": f"Detalles de la página '{formatted_page.get('title')}'", "page": formatted_page}
             else:
@@ -611,11 +642,16 @@ class ConfluenceAgent:
                 # Extraer texto plano del contenido
                 extracted_text = ctx.deps.confluence_client.extract_content_from_page(page)
                 
+                # Obtener URL completa
+                url = page.get("_links", {}).get("webui", "")
+                full_url = page.get("_links", {}).get("webui_full", ctx.deps.confluence_client._get_full_url(url))
+                
                 # Formatear la información de la página
                 formatted_page = {
                     "id": page.get("id", ""),
                     "title": page.get("title", ""),
-                    "url": page.get("_links", {}).get("webui", "") if "_links" in page else "",
+                    "url": url,
+                    "full_url": full_url,
                     "space_key": page.get("space", {}).get("key", "") if "space" in page else "",
                     "space_name": page.get("space", {}).get("name", "") if "space" in page else "",
                     "content": extracted_text,
@@ -626,7 +662,7 @@ class ConfluenceAgent:
                 logger.info(f"Obtenida página por título: {title} en el espacio {space_key}")
                 
                 # Guardar la página actual en el contexto
-                await self.remember_current_page(ctx, formatted_page.get("id"), formatted_page.get("title"), formatted_page.get("url"))
+                await self.remember_current_page(ctx, formatted_page.get("id"), formatted_page.get("title"), formatted_page.get("full_url"))
                 
                 return {"success": True, "message": f"Página encontrada: '{title}'", "page": formatted_page}
             else:
