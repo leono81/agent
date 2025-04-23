@@ -155,6 +155,13 @@ class ConfluenceAgent:
                     "DEBES utilizar la herramienta get_page_by_reference para obtener el ID correcto de la página antes de proceder con otras acciones (como get_page_details). "
                     "- No intentes adivinar el ID de la página basándote en el número de opción. Usa siempre get_page_by_reference."
                     "\n\n"
+                    "MANEJO DE RESULTADOS DE BÚSQUEDA: "
+                    "- La herramienta smart_search ahora filtra automáticamente resultados potencialmente irrelevantes, como páginas sobre Sprint Goals, Sprint Planning, etc. "
+                    "- Cuando encuentres resultados filtrados, SIEMPRE menciona al usuario: 'He encontrado X resultados en total, Y relevantes a tu consulta y Z posiblemente no relacionados directamente.' "
+                    "- Por ejemplo: 'He encontrado 2 páginas relacionadas con \"Mejoras en la línea Ford\". La primera página es directamente relevante, y la segunda página parece estar relacionada con Sprint Goal 2025, que probablemente no sea relevante para tu consulta actual.'"
+                    "- SOLO muestra los detalles de los resultados relevantes inicialmente, pero menciona siempre la existencia de los otros resultados. "
+                    "- Si el usuario pide explícitamente ver los resultados filtrados, entonces puedes mostrarlos. "
+                    "\n\n"
                     "DIRECTRICES PARA RESPONDER PREGUNTAS: "
                     "- Cuando los usuarios pregunten sobre procedimientos específicos como 'Cómo configuro la VPN' o 'Cómo instalo IntelliJ Idea', usa smart_search para encontrar documentación relevante. "
                     "- Utiliza get_page_details para obtener el contenido completo del documento más relevante. "
@@ -477,6 +484,9 @@ class ConfluenceAgent:
             if results:
                 # Formatear los resultados
                 formatted_results = []
+                filtered_results = []
+                irrelevant_results = []
+                
                 for i, result in enumerate(results, 1):
                     # Asegurar que tenemos una URL completa
                     full_url = result.get("full_url", "")
@@ -493,18 +503,68 @@ class ConfluenceAgent:
                         "space_name": result.get("space_name", ""),
                         "excerpt": result.get("excerpt", ""),
                         "content_type": result.get("content_type", ""),
-                        "extracted_text": result.get("extracted_text", "")
+                        "extracted_text": result.get("extracted_text", ""),
+                        "relevance_info": "",
+                        "is_relevant": True
                     }
-                    formatted_results.append(formatted_result)
+                    
+                    # Determinar si el resultado podría no ser relevante
+                    title_lower = formatted_result.get("title", "").lower()
+                    excerpt_lower = formatted_result.get("excerpt", "").lower()
+                    text_lower = formatted_result.get("extracted_text", "").lower()
+                    
+                    # Comprobar keywords que sugieren que el resultado no es directamente relevante
+                    # En este caso, detectar páginas de Sprint Goal y similar
+                    irrelevant_keywords = ["sprint goal", "sprint planning", "sprint review", "sprint retro", "daily scrum"]
+                    
+                    # Analizar si el tema principal del resultado parece ser sobre sprints ágiles
+                    is_primarily_sprint = False
+                    for keyword in irrelevant_keywords:
+                        if keyword in title_lower:
+                            is_primarily_sprint = True
+                            formatted_result["relevance_info"] = f"Parece ser sobre {keyword.title()}, no directamente sobre la consulta."
+                            formatted_result["is_relevant"] = False
+                            break
+                    
+                    # Agregar a la lista correspondiente basado en relevancia
+                    if formatted_result["is_relevant"]:
+                        relevant_results_count = len(formatted_results) + 1
+                        formatted_result["index"] = relevant_results_count
+                        formatted_results.append(formatted_result)
+                    else:
+                        irrelevant_results.append(formatted_result)
                 
-                # Guardar resultados en el contexto para referencia futura
-                ctx.deps.context["last_search_results"] = formatted_results
+                # Combinar resultados relevantes e irrelevantes para el contexto completo
+                all_results = formatted_results + irrelevant_results
                 
-                logger.info(f"Búsqueda inteligente '{query}': Encontrados {len(formatted_results)} resultados")
+                # Guardar TODOS los resultados en el contexto para referencia futura
+                ctx.deps.context["last_search_results"] = all_results
+                
+                # También guardar la información sobre resultados filtrados
+                ctx.deps.context["filtered_results_info"] = {
+                    "total_results": len(all_results),
+                    "relevant_results": len(formatted_results),
+                    "irrelevant_results": len(irrelevant_results),
+                    "irrelevant_titles": [r.get("title") for r in irrelevant_results]
+                }
+                
+                logger.info(f"Búsqueda inteligente '{query}': Encontrados {len(all_results)} resultados totales, {len(formatted_results)} relevantes")
+                
+                message = f"Se encontraron {len(all_results)} resultados para '{query}'"
+                if irrelevant_results:
+                    message += f", {len(formatted_results)} directamente relevantes y {len(irrelevant_results)} posiblemente no relacionados directamente"
+                
                 return {
                     "success": True, 
-                    "message": f"Se encontraron {len(formatted_results)} resultados para '{query}'", 
-                    "results": formatted_results
+                    "message": message, 
+                    "results": formatted_results,
+                    "all_results": all_results,
+                    "filtered_info": {
+                        "total": len(all_results),
+                        "shown": len(formatted_results),
+                        "filtered": len(irrelevant_results),
+                        "filtered_titles": [r.get("title") for r in irrelevant_results]
+                    }
                 }
             else:
                 logger.warning(f"No se encontraron resultados para la búsqueda inteligente '{query}'")
@@ -533,6 +593,21 @@ class ConfluenceAgent:
                 logger.warning("No hay resultados de búsqueda previos para obtener referencia")
                 return {"success": False, "message": "No hay resultados de búsqueda previos para obtener referencia", "page": None}
             
+            # Verificar si el usuario está haciendo referencia a una página filtrada 
+            filtered_info = ctx.deps.context.get("filtered_results_info", {})
+            filtered_titles = filtered_info.get("irrelevant_titles", [])
+            
+            # Verificar si la referencia menciona Sprint Goal explícitamente
+            is_asking_for_filtered = False
+            for title in filtered_titles:
+                if title.lower() in reference.lower() or ("sprint" in reference.lower() and "goal" in reference.lower()):
+                    is_asking_for_filtered = True
+                    # Buscar la página filtrada en los resultados completos
+                    for result in last_results:
+                        if result.get("title", "").lower() == title.lower():
+                            logger.info(f"Página filtrada solicitada explícitamente: {title}")
+                            return {"success": True, "message": f"Página filtrada seleccionada: {title}", "page": result, "was_filtered": True}
+            
             # Intentar extraer un número de la referencia
             index = None
             
@@ -549,26 +624,62 @@ class ConfluenceAgent:
                     index = value
                     break
             
+            # Patrón para 'otra página', 'la otra', etc.
+            if "otra" in reference.lower() and filtered_info.get("irrelevant_results", 0) > 0:
+                # Asumir que el usuario se refiere a la página filtrada
+                for result in last_results:
+                    if not result.get("is_relevant", True):
+                        logger.info(f"Página filtrada solicitada como 'la otra': {result.get('title')}")
+                        return {"success": True, "message": f"Página filtrada seleccionada: {result.get('title')}", "page": result, "was_filtered": True}
+            
+            # Si "no relevante" o "filtrada" está en la referencia
+            if "no relevante" in reference.lower() or "filtrada" in reference.lower() or "sprint" in reference.lower():
+                for result in last_results:
+                    if not result.get("is_relevant", True):
+                        logger.info(f"Página filtrada solicitada explícitamente: {result.get('title')}")
+                        return {"success": True, "message": f"Página filtrada seleccionada: {result.get('title')}", "page": result, "was_filtered": True}
+            
             # Patrón para simplemente un número
             if index is None:
                 num_match = re.search(r'^(\d+)$', reference.strip())
                 if num_match:
                     index = int(num_match.group(1))
             
-            # Si se encontró un índice y está dentro del rango de resultados
-            if index is not None and 1 <= index <= len(last_results):
-                selected_page = last_results[index - 1]
-                logger.info(f"Página seleccionada por referencia '{reference}': {selected_page.get('title')} (ID: {selected_page.get('id')})")
-                return {"success": True, "message": f"Página seleccionada: {selected_page.get('title')}", "page": selected_page}
-            else:
-                # Si no se encontró por índice, intentar buscar por coincidencia de título
-                for result in last_results:
-                    if result.get("title", "").lower() in reference.lower() or reference.lower() in result.get("title", "").lower():
-                        logger.info(f"Página seleccionada por título '{reference}': {result.get('title')} (ID: {result.get('id')})")
-                        return {"success": True, "message": f"Página seleccionada: {result.get('title')}", "page": result}
-                
-                logger.warning(f"No se encontró página para la referencia '{reference}'")
-                return {"success": False, "message": f"No se encontró página para la referencia '{reference}'", "page": None}
+            # Si se encontró un índice y está dentro del rango de resultados relevantes
+            if index is not None:
+                # Primero, buscar entre resultados relevantes (que tienen índices reasignados)
+                relevant_results = [r for r in last_results if r.get("is_relevant", True)]
+                if 1 <= index <= len(relevant_results):
+                    selected_page = relevant_results[index - 1]
+                    logger.info(f"Página relevante seleccionada por referencia '{reference}': {selected_page.get('title')}")
+                    return {"success": True, "message": f"Página seleccionada: {selected_page.get('title')}", "page": selected_page}
+                else:
+                    # Si el índice está fuera del rango de resultados relevantes, podría referirse a todos los resultados
+                    if 1 <= index <= len(last_results):
+                        selected_page = last_results[index - 1]
+                        is_filtered = not selected_page.get("is_relevant", True)
+                        logger.info(f"Página seleccionada por índice absoluto '{reference}': {selected_page.get('title')} (Filtrada: {is_filtered})")
+                        return {
+                            "success": True, 
+                            "message": f"Página seleccionada: {selected_page.get('title')}", 
+                            "page": selected_page,
+                            "was_filtered": is_filtered
+                        }
+            
+            # Si no se encontró por índice, intentar buscar por coincidencia de título
+            for result in last_results:
+                if result.get("title", "").lower() in reference.lower() or reference.lower() in result.get("title", "").lower():
+                    is_filtered = not result.get("is_relevant", True)
+                    logger.info(f"Página seleccionada por título '{reference}': {result.get('title')} (Filtrada: {is_filtered})")
+                    return {
+                        "success": True, 
+                        "message": f"Página seleccionada: {result.get('title')}", 
+                        "page": result,
+                        "was_filtered": is_filtered
+                    }
+            
+            logger.warning(f"No se encontró página para la referencia '{reference}'")
+            return {"success": False, "message": f"No se encontró página para la referencia '{reference}'", "page": None}
         except Exception as e:
             error_msg = f"Error al obtener página por referencia '{reference}': {str(e)}"
             logger.error(error_msg)
