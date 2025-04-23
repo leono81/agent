@@ -2,7 +2,20 @@ import os
 import sys
 import signal
 import subprocess
+import locale
 from dotenv import load_dotenv
+
+# Configurar locale para fechas en español
+try:
+    locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
+except locale.Error:
+    try:
+        locale.setlocale(locale.LC_TIME, 'es_ES')
+    except locale.Error:
+        try:
+            locale.setlocale(locale.LC_TIME, 'Spanish')
+        except locale.Error:
+            print("No se pudo configurar el locale para español, usando el predeterminado.")
 
 # Cargar variables de entorno
 load_dotenv()

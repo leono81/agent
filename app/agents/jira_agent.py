@@ -155,6 +155,12 @@ class JiraAgent:
                     "y cambiar estados de issues en Jira. "
                     "Sé conciso, claro y siempre útil. Cuando necesites más información, pregunta al usuario. "
                     "\n\n"
+                    "INFORMACIÓN IMPORTANTE SOBRE FECHAS:\n"
+                    f"- La fecha actual es {self._deps.context.get('current_date_human', datetime.now().strftime('%d de %B de %Y'))}.\n"
+                    f"- Hoy es {self._deps.context.get('weekday', datetime.now().strftime('%A'))}.\n"
+                    "- Cuando el usuario haga referencia a 'hoy', usa la fecha actual indicada arriba.\n"
+                    "- Cuando el usuario mencione 'ayer', calcula correctamente el día anterior.\n"
+                    "\n\n"
                     "DIRECTRICES IMPORTANTES DE CONTEXTO Y MEMORIA: "
                     "- SIEMPRE usa la herramienta get_conversation_history al inicio de tu respuesta para recordar el contexto de la conversación. "
                     "  Esto te permitirá mantener la coherencia y recordar referencias a issues, búsquedas previas y preferencias del usuario. "
@@ -247,7 +253,19 @@ class JiraAgent:
     def _parse_date_str_to_jira_started_format(self, date_str: str) -> Optional[str]:
         """Convierte una cadena de fecha a formato YYYY-MM-DDTHH:MM:SS.sss+ZZZZ (asumiendo UTC y 00:00:00)."""
         parsed_date = None
-        today = date.today()
+        # Obtener la fecha actual desde el contexto si está disponible, o usar date.today() como fallback
+        if self._deps and hasattr(self._deps, 'context') and 'current_date' in self._deps.context:
+            # Usar la fecha del contexto para asegurar consistencia a través de la aplicación
+            try:
+                current_date_str = self._deps.context['current_date']
+                today = datetime.strptime(current_date_str, "%Y-%m-%d").date()
+                logger.info(f"Usando fecha actual desde contexto: {today}")
+            except (ValueError, KeyError) as e:
+                logger.warning(f"Error al leer fecha del contexto, usando date.today(): {e}")
+                today = date.today()
+        else:
+            today = date.today()
+            
         date_str_lower = date_str.lower().strip()
         
         if date_str_lower == "hoy":

@@ -3,8 +3,21 @@ import os
 import sys
 import atexit
 import signal
+import locale
 from datetime import datetime
 from dotenv import load_dotenv
+
+# Configurar locale para fechas en español
+try:
+    locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
+except locale.Error:
+    try:
+        locale.setlocale(locale.LC_TIME, 'es_ES')
+    except locale.Error:
+        try:
+            locale.setlocale(locale.LC_TIME, 'Spanish')
+        except locale.Error:
+            print("No se pudo configurar el locale para español, usando el predeterminado.")
 
 # Cargar variables de entorno
 load_dotenv()
@@ -101,7 +114,22 @@ with st.sidebar:
         st.markdown("- Crear una página nueva sobre arquitectura")
     
     st.markdown("---")
-    st.markdown(f"Fecha actual: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    
+    # Utilizar el formato de fecha manual para mayor consistencia
+    now = datetime.now()
+    month_names = {
+        1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 
+        5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+        9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre"
+    }
+    weekday_names = {
+        0: "lunes", 1: "martes", 2: "miércoles", 3: "jueves",
+        4: "viernes", 5: "sábado", 6: "domingo"
+    }
+    
+    date_human = f"{now.day} de {month_names[now.month]} de {now.year}"
+    weekday = weekday_names[now.weekday()]
+    st.markdown(f"Fecha actual: {weekday.capitalize()}, {date_human}")
     
     # Botón para reiniciar la conversación
     if st.button("Nueva Conversación"):

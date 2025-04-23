@@ -84,7 +84,22 @@ with st.sidebar:
     st.markdown("- ¿Cumplí con mis horas de ayer?")
     
     st.markdown("---")
-    st.markdown(f"Fecha actual: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    
+    # Utilizar el formato de fecha manual para mayor consistencia
+    now = datetime.now()
+    month_names = {
+        1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 
+        5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+        9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre"
+    }
+    weekday_names = {
+        0: "lunes", 1: "martes", 2: "miércoles", 3: "jueves",
+        4: "viernes", 5: "sábado", 6: "domingo"
+    }
+    
+    date_human = f"{now.day} de {month_names[now.month]} de {now.year}"
+    weekday = weekday_names[now.weekday()]
+    st.markdown(f"Fecha actual: {weekday.capitalize()}, {date_human}")
     
     # Botón para reiniciar la conversación
     if st.button("Nueva Conversación"):
