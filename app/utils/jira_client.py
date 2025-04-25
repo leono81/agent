@@ -169,8 +169,10 @@ class JiraClient:
             issue_key: Clave de la issue.
             time_in_sec: Tiempo invertido en segundos.
             comment: Comentario para el registro de trabajo.
-            started: Fecha/hora de inicio en formato ISO 8601 con offset (ej. YYYY-MM-DDTHH:MM:SS.sss+ZZZZ).
+            started: Fecha/hora de inicio en formato ISO 8601 con offset (ej. YYYY-MM-DDTHH:MM:SS.SSSZ).
                      Si es None, la API podría usar la hora actual.
+                     IMPORTANTE: El offset de zona horaria (Z) debe estar en formato +0000 o -0300
+                     sin dos puntos. El formato con dos puntos (+00:00) no es aceptado por Jira.
             
         Returns:
             bool: True si se agregó correctamente, False en caso contrario.

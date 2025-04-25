@@ -252,7 +252,7 @@ class JiraAgent:
         return total_seconds
 
     def _parse_date_str_to_jira_started_format(self, date_str: str) -> Optional[str]:
-        """Convierte una cadena de fecha a formato YYYY-MM-DDTHH:MM:SS.sss+ZZZZ (asumiendo UTC y 00:00:00)."""
+        """Convierte una cadena de fecha a formato YYYY-MM-DDTHH:MM:SS.sssZ respetando la zona horaria local."""
         parsed_date = None
         # Obtener la fecha actual desde el contexto si está disponible, o usar date.today() como fallback
         if self._deps and hasattr(self._deps, 'context') and 'current_date' in self._deps.context:
@@ -295,10 +295,21 @@ class JiraAgent:
                     return None
 
         if parsed_date:
-            # Formato: %Y-%m-%dT%H:%M:%S.%f%z -> YYYY-MM-DDTHH:MM:SS.sss+ZZZZ
-            # Asumimos inicio del día (00:00:00) y UTC (+0000)
-            dt_obj = datetime.combine(parsed_date, datetime.min.time()) 
-            jira_started_format = dt_obj.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+            # En lugar de usar el inicio del día (00:00:00) y UTC (+0000),
+            # usamos 12:00:00 (mediodía) para evitar problemas con cambios de horario de verano
+            dt_obj = datetime.combine(parsed_date, datetime.min.time().replace(hour=12)) 
+            
+            # Crear un datetime con zona horaria aware usando el timezone local
+            dt_with_tz = dt_obj.astimezone()
+            
+            # Formatear directamente al formato que Jira espera exactamente: YYYY-MM-ddTHH:mm:ss.SSSZ
+            # Donde Z es +0000 o -0300, etc. sin los dos puntos
+            # Primero obtenemos el offset sin los dos puntos
+            utc_offset = dt_with_tz.strftime('%z')
+            
+            # Después formateamos la fecha completa
+            jira_started_format = dt_with_tz.strftime("%Y-%m-%dT%H:%M:%S.000") + utc_offset
+            
             logger.info(f"Fecha parseada: '{date_str}' -> {jira_started_format}")
             return jira_started_format
         
@@ -826,6 +837,8 @@ class JiraAgent:
             time_str: Tiempo invertido en formato legible (ej. "1h 30m", "90m", "1.5h")
             comment: Comentario para el worklog (opcional)
             date_str: Fecha del trabajo en formato legible (ej. "hoy", "ayer", "2023-04-22")
+                      La fecha se registrará respetando la zona horaria del usuario,
+                      lo que asegura que los worklogs aparezcan en el día correcto en Jira.
             
         Returns:
             Dict[str, Any]: Resultado de la operación o error.

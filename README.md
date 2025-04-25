@@ -179,3 +179,13 @@ El sistema está diseñado para ser ampliado con:
 - Integración con otros servicios de Atlassian
 - Funcionalidades adicionales como creación de contenido
 - Personalización de la interfaz de usuario 
+
+## Changelog
+
+### 2025-04-25: Corrección de husos horarios en registro de tiempo
+
+- **Problema resuelto**: Se corrigió un problema donde los tiempos registrados en Jira aparecían con fecha incorrecta.
+- **Causa**: El sistema estaba utilizando siempre UTC (+0000) para los registros de trabajo, sin tener en cuenta la zona horaria del usuario.
+- **Solución**: Ahora se utiliza la zona horaria local del usuario para registrar los tiempos, lo que asegura que los worklogs aparezcan en el día correcto en Jira.
+- **Implementación técnica**: Se modificó el método `_parse_date_str_to_jira_started_format` para usar mediodía (12:00) como hora por defecto y respetar la zona horaria local, evitando problemas con el cambio de horario de verano.
+- **Corrección adicional (2025-04-25)**: Se ajustó el formato del offset de zona horaria para cumplir exactamente con el requisito de Jira (YYYY-MM-DDTHH:MM:SS.SSSZ), utilizando el formato sin dos puntos en el offset de zona horaria. 
