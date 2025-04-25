@@ -814,4 +814,23 @@ class JiraClient:
                 
         except Exception as e:
             logger.error(f"Error al obtener comentarios de {issue_key}: {str(e)}")
-            return [] 
+            return []
+    
+    def get_issue_url(self, issue_key: str) -> str:
+        """
+        Genera la URL completa para una issue de Jira que permite acceso directo vía navegador.
+        
+        Args:
+            issue_key: Clave de la issue (ej. PSIMDESASW-1234).
+            
+        Returns:
+            str: URL completa para acceder a la issue en el navegador.
+        """
+        # Asegurar que la URL base no termina con barra
+        base_url = JIRA_URL.rstrip('/')
+        
+        # Generar la URL siguiendo el formato estándar de Jira: {JIRA_URL}/browse/{ISSUE_KEY}
+        issue_url = f"{base_url}/browse/{issue_key}"
+        
+        logger.debug(f"URL generada para {issue_key}: {issue_url}")
+        return issue_url 

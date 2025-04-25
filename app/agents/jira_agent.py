@@ -529,8 +529,20 @@ class JiraAgent:
             Dict[str, Any]: Resultado de la operación.
         """
         logger.info(f"Guardando issue actual: {issue_key}")
+        
+        # Obtener la URL de la issue
+        issue_url = ctx.deps.jira_client.get_issue_url(issue_key)
+        
+        # Guardar tanto la clave como la URL en el contexto
         ctx.deps.context["current_issue"] = issue_key
-        return {"success": True, "message": f"Issue {issue_key} guardada como issue actual"}
+        ctx.deps.context["current_issue_url"] = issue_url
+        
+        return {
+            "success": True, 
+            "message": f"Issue {issue_key} guardada como issue actual",
+            "issue_key": issue_key,
+            "url": issue_url
+        }
     
     async def get_current_issue(self, ctx: RunContext[JiraAgentDependencies]) -> Dict[str, Any]:
         """
@@ -543,9 +555,15 @@ class JiraAgent:
             Dict[str, Any]: Información sobre la issue actual o un mensaje de error.
         """
         current_issue = ctx.deps.context.get("current_issue")
+        current_issue_url = ctx.deps.context.get("current_issue_url")
+        
         if current_issue:
             logger.info(f"Obtenida issue actual: {current_issue}")
-            return {"success": True, "issue_key": current_issue}
+            return {
+                "success": True, 
+                "issue_key": current_issue,
+                "url": current_issue_url
+            }
         else:
             logger.info("No hay issue actual guardada")
             return {"success": False, "error": "No hay ninguna issue seleccionada actualmente"}
@@ -574,12 +592,16 @@ class JiraAgent:
                 status = issue.get("fields", {}).get("status", {}).get("name", "Sin estado")
                 priority = issue.get("fields", {}).get("priority", {}).get("name", "Sin prioridad")
                 
+                # Obtener URL para la issue
+                issue_url = ctx.deps.jira_client.get_issue_url(issue_key)
+                
                 formatted_issues.append({
                     "option": i + 1,
                     "key": issue_key,
                     "summary": summary,
                     "status": status,
-                    "priority": priority
+                    "priority": priority,
+                    "url": issue_url  # Añadir URL para acceso directo
                 })
             
             logger.info(f"Obtenidas {len(formatted_issues)} issues asignadas al usuario")
@@ -620,12 +642,16 @@ class JiraAgent:
                 status = issue.get("fields", {}).get("status", {}).get("name", "Sin estado")
                 priority = issue.get("fields", {}).get("priority", {}).get("name", "Sin prioridad")
                 
+                # Obtener URL para la issue
+                issue_url = ctx.deps.jira_client.get_issue_url(issue_key)
+                
                 formatted_issues.append({
                     "option": i + 1,
                     "key": issue_key,
                     "summary": summary,
                     "status": status,
-                    "priority": priority
+                    "priority": priority,
+                    "url": issue_url  # Añadir URL para acceso directo
                 })
             
             logger.info(f"Búsqueda completada: {len(formatted_issues)} issues encontradas")
@@ -722,11 +748,15 @@ class JiraAgent:
                 issue_key = issue.get("key")
                 summary = issue.get("fields", {}).get("summary", "Sin título")
                 
+                # Obtener URL para la issue
+                issue_url = ctx.deps.jira_client.get_issue_url(issue_key)
+                
                 logger.info(f"Referencia resuelta a issue: {issue_key} ({summary})")
                 return {
                     "success": True,
                     "issue_key": issue_key,
-                    "summary": summary
+                    "summary": summary,
+                    "url": issue_url  # Añadir URL para acceso directo
                 }
             else:
                 return {"success": False, "error": f"No se pudo identificar una issue con la referencia '{reference}'"}
@@ -757,6 +787,9 @@ class JiraAgent:
             # Extraer campos importantes para la respuesta
             fields = issue.get("fields", {})
             
+            # Obtener la URL de la issue
+            issue_url = ctx.deps.jira_client.get_issue_url(issue_key)
+            
             formatted_issue = {
                 "key": issue_key,
                 "summary": fields.get("summary", "Sin título"),
@@ -767,7 +800,8 @@ class JiraAgent:
                 "reporter": fields.get("reporter", {}).get("displayName", "Sin reportador"),
                 "created": fields.get("created", "Fecha desconocida"),
                 "updated": fields.get("updated", "Fecha desconocida"),
-                "issuetype": fields.get("issuetype", {}).get("name", "Sin tipo")
+                "issuetype": fields.get("issuetype", {}).get("name", "Sin tipo"),
+                "url": issue_url  # Añadir URL para acceso directo
             }
             
             logger.info(f"Detalles obtenidos para issue {issue_key}")
