@@ -407,6 +407,219 @@ class ConfluenceClient:
         return enriched_results
     
     def clear_cache(self) -> None:
-        """Limpia toda la caché."""
+        """
+        Limpia toda la caché almacenada.
+        """
         self._cache = {}
-        logger.info("Caché de Confluence limpiada") 
+        logger.info("Caché limpiada")
+        
+    def create_incident_page(self, incident_data: Dict[str, Any], space_key: str = "PSIMDESASW") -> Dict[str, Any]:
+        """
+        Crea una nueva página de incidente en Confluence con formato de tabla.
+        
+        Args:
+            incident_data: Diccionario con los datos del incidente (recopilados por el agente ATI)
+            space_key: Clave del espacio donde crear la página (por defecto PSIMDESASW)
+            
+        Returns:
+            Dict[str, Any]: Información de la página creada, incluyendo ID y URL
+        """
+        try:
+            # Extraer datos del incidente
+            fecha_incidente = incident_data.get('fecha_incidente', datetime.now().strftime('%Y-%m-%d'))
+            tipo_incidente = incident_data.get('tipo_incidente', 'N/A')
+            impacto = incident_data.get('impacto', 'N/A')
+            prioridad = incident_data.get('prioridad', 'N/A')
+            estado_actual = incident_data.get('estado_actual', 'N/A')
+            unidad_negocio = incident_data.get('unidad_negocio', 'N/A')
+            usuarios_soporte = incident_data.get('usuarios_soporte', [])
+            descripcion_problema = incident_data.get('descripcion_problema', 'N/A')
+            acciones_realizadas = incident_data.get('acciones_realizadas', [])
+            fecha_resolucion = incident_data.get('fecha_resolucion', 'N/A')
+            observaciones = incident_data.get('observaciones', 'N/A')
+            
+            # Formatear fecha para el título (formato legible)
+            fecha_formateada = datetime.strptime(fecha_incidente, '%Y-%m-%d').strftime('%d/%m/%Y')
+            
+            # Crear título de la página (fecha primero, luego tipo de incidente)
+            page_title = f"{fecha_formateada} - {tipo_incidente}"
+            
+            # Crear contenido de la página con formato HTML
+            content = self._generate_incident_table_html(
+                fecha_incidente=fecha_incidente,
+                tipo_incidente=tipo_incidente,
+                impacto=impacto,
+                prioridad=prioridad,
+                estado_actual=estado_actual,
+                unidad_negocio=unidad_negocio,
+                usuarios_soporte=usuarios_soporte,
+                descripcion_problema=descripcion_problema,
+                acciones_realizadas=acciones_realizadas,
+                fecha_resolucion=fecha_resolucion,
+                observaciones=observaciones
+            )
+            
+            # Crear la página en Confluence
+            result = self.confluence.create_page(
+                space=space_key,
+                title=page_title,
+                body=content,
+                representation='storage',
+                parent_id=None  # Si se desea crear como página principal (ajustar si necesita estar dentro de una sección)
+            )
+            
+            # Agregar la URL completa al resultado
+            if '_links' in result and 'webui' in result['_links']:
+                result['_links']['webui_full'] = self._get_full_url(result['_links']['webui'])
+            
+            logger.info(f"Página de incidente creada: {page_title} - ID: {result.get('id')}")
+            
+            return {
+                "id": result.get('id'),
+                "title": page_title,
+                "url": result.get('_links', {}).get('webui_full', ''),
+                "space_key": space_key,
+                "success": True,
+                "message": f"Página de incidente creada exitosamente: {page_title}"
+            }
+        
+        except Exception as e:
+            error_msg = f"Error al crear página de incidente: {str(e)}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "message": error_msg
+            }
+    
+    def _generate_incident_table_html(self, 
+                                     fecha_incidente: str,
+                                     tipo_incidente: str,
+                                     impacto: str,
+                                     prioridad: str,
+                                     estado_actual: str,
+                                     unidad_negocio: str,
+                                     usuarios_soporte: List[str],
+                                     descripcion_problema: str,
+                                     acciones_realizadas: List[str],
+                                     fecha_resolucion: str,
+                                     observaciones: str) -> str:
+        """
+        Genera el contenido HTML con formato de tabla para la página de incidente.
+        
+        Args:
+            Los campos del incidente
+            
+        Returns:
+            str: Contenido HTML para la página de Confluence
+        """
+        # Fecha en formato legible
+        fecha_formateada = datetime.strptime(fecha_incidente, '%Y-%m-%d').strftime('%d/%m/%Y')
+        
+        # Formatear usuarios de soporte como lista HTML
+        usuarios_html = ""
+        if usuarios_soporte:
+            usuarios_html = "<ul>"
+            for usuario in usuarios_soporte:
+                usuarios_html += f"<li>{usuario}</li>"
+            usuarios_html += "</ul>"
+        else:
+            usuarios_html = "N/A"
+        
+        # Procesar acciones realizadas
+        acciones_rows = ""
+        if acciones_realizadas:
+            for i, accion in enumerate(acciones_realizadas, 1):
+                # Intentar extraer fecha, detalle y área (formato esperado: "fecha - detalle - área")
+                partes = []
+                if " - " in accion:
+                    partes = accion.split(" - ", 2)
+                
+                if len(partes) >= 3:
+                    fecha_accion, detalle_accion, area_accion = partes
+                    acciones_rows += f"""
+                    <tr>
+                        <td>Fecha de acción {i}</td>
+                        <td>{detalle_accion}</td>
+                        <td>{area_accion}</td>
+                    </tr>
+                    """
+                else:
+                    # Si no tiene el formato esperado, mostrarlo completo
+                    acciones_rows += f"""
+                    <tr>
+                        <td>Acción {i}</td>
+                        <td colspan="2">{accion}</td>
+                    </tr>
+                    """
+        
+        # Crear tabla HTML
+        html_content = f"""
+        <h1>Incidente Mayor: {tipo_incidente}</h1>
+        
+        <table class="confluenceTable">
+            <tbody>
+                <tr>
+                    <th class="confluenceTh">Fecha de Incidente</th>
+                    <td class="confluenceTd">{fecha_formateada}</td>
+                </tr>
+                <tr>
+                    <th class="confluenceTh">Tipo de Incidente</th>
+                    <td class="confluenceTd">{tipo_incidente}</td>
+                </tr>
+                <tr>
+                    <th class="confluenceTh">Impacto</th>
+                    <td class="confluenceTd">{impacto}</td>
+                </tr>
+                <tr>
+                    <th class="confluenceTh">Prioridad</th>
+                    <td class="confluenceTd">{prioridad}</td>
+                </tr>
+                <tr>
+                    <th class="confluenceTh">Estado Actual</th>
+                    <td class="confluenceTd">{estado_actual}</td>
+                </tr>
+                <tr>
+                    <th class="confluenceTh">Unidad de Negocio Solicitante</th>
+                    <td class="confluenceTd">{unidad_negocio}</td>
+                </tr>
+                <tr>
+                    <th class="confluenceTh">Usuario de soporte</th>
+                    <td class="confluenceTd">{usuarios_html}</td>
+                </tr>
+                <tr>
+                    <th class="confluenceTh">Descripción del Problema</th>
+                    <td class="confluenceTd">{descripcion_problema}</td>
+                </tr>
+            </tbody>
+        </table>
+        
+        <h2>Acciones Realizadas</h2>
+        <table class="confluenceTable">
+            <thead>
+                <tr>
+                    <th class="confluenceTh">Fecha</th>
+                    <th class="confluenceTh">Acciones Realizadas</th>
+                    <th class="confluenceTh">Área Encargada de la acción</th>
+                </tr>
+            </thead>
+            <tbody>
+                {acciones_rows}
+            </tbody>
+        </table>
+        
+        <h2>Resolución</h2>
+        <table class="confluenceTable">
+            <tbody>
+                <tr>
+                    <th class="confluenceTh">Fecha de Resolución</th>
+                    <td class="confluenceTd">{fecha_resolucion}</td>
+                </tr>
+                <tr>
+                    <th class="confluenceTh">Observaciones</th>
+                    <td class="confluenceTd">{observaciones}</td>
+                </tr>
+            </tbody>
+        </table>
+        """
+        
+        return html_content 

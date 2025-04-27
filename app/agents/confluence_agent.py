@@ -128,7 +128,10 @@ class ConfluenceAgent:
                     description="Obtiene detalles completos de una página específica de Confluence, incluyendo su contenido."),
                 Tool(self.get_page_by_title, takes_ctx=True, 
                     name="get_page_by_title",
-                    description="Busca una página por su título en un espacio específico. Útil cuando el usuario menciona un título exacto de una página.")
+                    description="Busca una página por su título en un espacio específico. Útil cuando el usuario menciona un título exacto de una página."),
+                Tool(self.create_incident_page, takes_ctx=True, 
+                    name="create_incident_page",
+                    description="Crea una nueva página de Incidente Mayor en Confluence con los datos proporcionados. Esta herramienta recibe un diccionario con toda la información del incidente y crea una página estructurada con formato de tabla.")
             ]
             
             # Inicializar el agente de PydanticAI
@@ -745,47 +748,87 @@ class ConfluenceAgent:
         Busca una página por su título en un espacio específico.
         
         Args:
-            ctx: Contexto de ejecución con dependencias.
-            space_key: Clave del espacio.
-            title: Título de la página.
+            ctx: Contexto de ejecución.
+            space_key: Clave del espacio donde buscar.
+            title: Título de la página a buscar.
             
         Returns:
-            Dict[str, Any]: Detalles de la página o mensaje de error.
+            Dict[str, Any]: Información sobre la página encontrada.
         """
         try:
             page = ctx.deps.confluence_client.get_page_by_title(space_key, title)
             
             if page:
-                # Extraer texto plano del contenido
-                extracted_text = ctx.deps.confluence_client.extract_content_from_page(page)
-                
-                # Obtener URL completa
-                url = page.get("_links", {}).get("webui", "")
-                full_url = page.get("_links", {}).get("webui_full", ctx.deps.confluence_client._get_full_url(url))
-                
-                # Formatear la información de la página
-                formatted_page = {
-                    "id": page.get("id", ""),
-                    "title": page.get("title", ""),
-                    "url": url,
-                    "full_url": full_url,
-                    "space_key": page.get("space", {}).get("key", "") if "space" in page else "",
-                    "space_name": page.get("space", {}).get("name", "") if "space" in page else "",
-                    "content": extracted_text,
-                    "version": page.get("version", {}).get("number", "") if "version" in page else "",
-                    "last_modified": page.get("version", {}).get("when", "") if "version" in page else ""
+                # Preparar respuesta
+                response = {
+                    "found": True,
+                    "page_id": page.get("id"),
+                    "title": page.get("title"),
+                    "url": page.get("_links", {}).get("webui_full", ""),
+                    "space_key": space_key,
+                    "message": f"Página encontrada: {page.get('title')}"
+                }
+            else:
+                response = {
+                    "found": False,
+                    "space_key": space_key,
+                    "title": title,
+                    "message": f"No se encontró ninguna página con el título '{title}' en el espacio {space_key}."
                 }
                 
-                logger.info(f"Obtenida página por título: {title} en el espacio {space_key}")
-                
-                # Guardar la página actual en el contexto
-                await self.remember_current_page(ctx, formatted_page.get("id"), formatted_page.get("title"), formatted_page.get("full_url"))
-                
-                return {"success": True, "message": f"Página encontrada: '{title}'", "page": formatted_page}
-            else:
-                logger.warning(f"No se encontró la página con título '{title}' en el espacio {space_key}")
-                return {"success": False, "message": f"No se encontró la página con título '{title}' en el espacio {space_key}", "page": None}
+            return response
         except Exception as e:
-            error_msg = f"Error al obtener página con título '{title}' en el espacio {space_key}: {str(e)}"
-            logger.error(error_msg)
-            return {"success": False, "message": error_msg, "page": None} 
+            logger.error(f"Error al buscar página por título: {e}")
+            return {
+                "found": False,
+                "error": str(e),
+                "message": f"Error al buscar página por título: {str(e)}"
+            }
+    
+    async def create_incident_page(self, 
+                                 ctx: RunContext[ConfluenceAgentDependencies], 
+                                 incident_data: Dict[str, Any], 
+                                 space_key: str = "PSIMDESASW") -> Dict[str, Any]:
+        """
+        Crea una nueva página de Incidente Mayor en Confluence con los datos proporcionados.
+        
+        Args:
+            ctx: Contexto de ejecución.
+            incident_data: Diccionario con los datos del incidente recopilados por el agente ATI.
+            space_key: Clave del espacio donde crear la página (por defecto PSIMDESASW).
+            
+        Returns:
+            Dict[str, Any]: Información sobre la página creada, incluyendo ID y URL.
+        """
+        try:
+            # Validar datos mínimos requeridos
+            required_fields = ['tipo_incidente', 'fecha_incidente', 'impacto', 'prioridad', 'estado_actual']
+            missing_fields = [field for field in required_fields if field not in incident_data or not incident_data[field]]
+            
+            if missing_fields:
+                return {
+                    "success": False,
+                    "message": f"Faltan campos requeridos para crear la página: {', '.join(missing_fields)}"
+                }
+            
+            # Crear la página usando el cliente de Confluence
+            result = ctx.deps.confluence_client.create_incident_page(incident_data, space_key)
+            
+            # Si se creó exitosamente, guardar la página como página actual
+            if result.get("success", False) and "id" in result:
+                await self.remember_current_page(
+                    ctx,
+                    page_id=result["id"],
+                    title=result["title"],
+                    url=result["url"]
+                )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error al crear página de incidente: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "message": f"Error al crear página de incidente: {str(e)}"
+            } 

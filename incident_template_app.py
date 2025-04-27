@@ -10,6 +10,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Importar el agente de templates de incidentes
 from app.agents.incident_template_agent import IncidentTemplateAgent
+# Importar el agente de Confluence
+from app.agents.confluence_agent import ConfluenceAgent
+from app.utils.deps import get_deps
+from pydantic_ai import RunContext
 
 # Cargar variables de entorno
 load_dotenv()
@@ -35,6 +39,43 @@ def set_page_config():
     </style>
     """, unsafe_allow_html=True)
 
+def enviar_a_confluence(incident_data):
+    """
+    Envía los datos del incidente al agente de Confluence para crear una página.
+    
+    Args:
+        incident_data (dict): Diccionario con los datos del incidente
+        
+    Returns:
+        dict: Resultado de la operación con el estado y la URL de la página creada
+    """
+    try:
+        # Configurar el agente de Confluence
+        deps = get_deps()
+        confluence_agent = ConfluenceAgent(deps)
+        confluence_context = RunContext(deps=deps)
+        
+        # Espacio predeterminado para las páginas de incidentes
+        space_key = "PSIMDESASW"  # Este espacio puede ser configurable o parte de las variables de entorno
+        
+        # Crear la página de incidente
+        st.info("Enviando datos a Confluence. Por favor, espera...")
+        
+        # Llamar al método de forma sincrónica
+        import asyncio
+        result = asyncio.run(confluence_agent.create_incident_page(
+            confluence_context,
+            incident_data,
+            space_key
+        ))
+        
+        return result
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error al crear la página en Confluence: {str(e)}"
+        }
+
 def main():
     """
     Función principal que ejecuta la aplicación de recopilación de datos de incidentes.
@@ -55,13 +96,11 @@ def main():
     
     # Si el resultado no es None, significa que el proceso ha sido completado
     if result:
-        # En una implementación completa, aquí enviaríamos los datos al orquestador
-        # para que los pase al agente de Confluence
-        print("Datos del incidente recopilados con éxito.")
-        print(f"Datos listos para enviar al agente de Confluence: {json.dumps(result, ensure_ascii=False, indent=2)}")
+        # Mostrar los datos recopilados
+        st.subheader("Datos del incidente recopilados correctamente")
+        st.json(result)
         
-        # También podríamos guardar los datos en un archivo para recuperarlos
-        # en caso de que la aplicación se cierre
+        # Guardar los datos en un archivo para recuperarlos en caso de que la aplicación se cierre
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         incidents_dir = "incidents"
         if not os.path.exists(incidents_dir):
@@ -71,13 +110,20 @@ def main():
         try:
             with open(filename, "w", encoding="utf-8") as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
-            print(f"Datos guardados en: {filename}")
             st.success(f"Datos guardados en: {filename}")
         except Exception as e:
-            print(f"Error al guardar los datos: {e}")
+            st.error(f"Error al guardar los datos: {e}")
+        
+        # Preguntar al usuario si desea crear la página en Confluence
+        if st.button("Crear página en Confluence"):
+            # Enviar datos a Confluence
+            confluence_result = enviar_a_confluence(result)
             
-        # Para comunicarse con el orquestador, en una implementación real
-        # podríamos usar un endpoint o un mecanismo de comunicación entre procesos
+            if confluence_result.get("success", False):
+                st.success(f"✅ Página creada exitosamente: {confluence_result.get('title')}")
+                st.markdown(f"[Ver página en Confluence]({confluence_result.get('url')})")
+            else:
+                st.error(f"❌ Error al crear la página: {confluence_result.get('message')}")
 
 if __name__ == "__main__":
     try:
