@@ -1,0 +1,19 @@
+{
+  "fecha_incidente": "2025-04-26",
+  "tipo_incidente": "Error en puesto SIM",
+  "impacto": "Medio",
+  "prioridad": "Alta",
+  "estado_actual": "Resuelto",
+  "unidad_negocio": "PLACAS - SMT",
+  "usuarios_soporte": [
+    "Abel Cejas",
+    "Sebastian Fontana",
+    "Lia Jurijiw"
+  ],
+  "descripcion_problema": "El puesto de reparacion SMTRP01 muestra mensaje de error: “Debe ingresar numero de Orden de Fabricacion“. El puesto no requiere OF.",
+  "acciones_realizadas": [
+    "25/03/2024 - \t Se revisaron los logs de SIM, los cambios implementados en produccion y se corroboró por base de datos si el puesto tenia un serie asociado.  Se elimina por bd el serie asociado al puesto. -  - Desarrollo"
+  ],
+  "fecha_resolucion": "2025-04-26",
+  "observaciones": " Consulta para ver si tenia un serie asociado:\nSELECT * FROM PP006 p WHERE p.PP06CONFP = 709\n\nActualizacion:\n\n\n\nUPDATE PP006 SET PP06SERIE=NULL WHERE PP06ID=1501;\n"
+}

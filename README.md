@@ -188,4 +188,39 @@ El sistema está diseñado para ser ampliado con:
 - **Causa**: El sistema estaba utilizando siempre UTC (+0000) para los registros de trabajo, sin tener en cuenta la zona horaria del usuario.
 - **Solución**: Ahora se utiliza la zona horaria local del usuario para registrar los tiempos, lo que asegura que los worklogs aparezcan en el día correcto en Jira.
 - **Implementación técnica**: Se modificó el método `_parse_date_str_to_jira_started_format` para usar mediodía (12:00) como hora por defecto y respetar la zona horaria local, evitando problemas con el cambio de horario de verano.
-- **Corrección adicional (2025-04-25)**: Se ajustó el formato del offset de zona horaria para cumplir exactamente con el requisito de Jira (YYYY-MM-DDTHH:MM:SS.SSSZ), utilizando el formato sin dos puntos en el offset de zona horaria. 
+- **Corrección adicional (2025-04-25)**: Se ajustó el formato del offset de zona horaria para cumplir exactamente con el requisito de Jira (YYYY-MM-DDTHH:MM:SS.SSSZ), utilizando el formato sin dos puntos en el offset de zona horaria.
+
+## Agente Templates Incidentes (ATI)
+
+El ATI es un agente especializado en la recopilación de información para registrar Incidentes Mayores. Guía al usuario a través de una conversación estructurada siguiendo un template específico.
+
+### Características
+
+- Interfaz conversacional paso a paso en Streamlit
+- Recopilación de datos estructurada según un template configurado
+- Validación de datos y gestión de listas (usuarios de soporte, acciones realizadas)
+- Paso de confirmación final antes de finalizar el proceso
+- Integración con el orquestador del sistema multiagente
+
+### Ejecución independiente
+
+Para ejecutar el ATI de forma independiente, utiliza el siguiente comando:
+
+```bash
+streamlit run incident_template_app.py
+```
+
+### Ejecución a través del orquestador
+
+El ATI también está integrado en el orquestador principal. Para interactuar con él a través del orquestador, inicia la aplicación principal y menciona que deseas registrar un incidente:
+
+```bash
+python app.py
+```
+
+Y luego, en la interfaz conversacional, puedes escribir mensajes como:
+- "Quiero registrar un incidente mayor"
+- "Necesito crear un template de incidente"
+- "Ayúdame a documentar un problema"
+
+El orquestador te redirigirá automáticamente al ATI. 

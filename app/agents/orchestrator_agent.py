@@ -5,6 +5,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic import BaseModel
 from app.agents.jira_agent import JiraAgent
 from app.agents.confluence_agent import ConfluenceAgent
+from app.agents.incident_template_agent import IncidentTemplateAgent
 from datetime import datetime, date
 
 class SharedContext(BaseModel):
@@ -101,8 +102,9 @@ class OrchestratorAgent:
         # Initialize the specialized agents
         self.jira_agent = JiraAgent()
         self.confluence_agent = ConfluenceAgent()
+        self.incident_template_agent = IncidentTemplateAgent()
         
-        # Add fecha actual to both agent contexts for proper date handling
+        # Add fecha actual to all agent contexts for proper date handling
         if "context" in self.jira_agent._deps.__dict__:
             self.jira_agent._deps.context["current_date"] = self.context.current_date
             self.jira_agent._deps.context["current_date_human"] = self.context.metadata["current_date_human"]
@@ -115,14 +117,15 @@ class OrchestratorAgent:
         
         # Define classifier prompt
         self.classifier_prompt = f"""
-        Determine whether the following query is related to Jira or Confluence:
+        Determine whether the following query is related to Jira, Confluence, or Incident Templates:
         
         - Jira: Issues, tickets, stories, tasks, sprints, boards, projects, assignments, worklog, time tracking, transitions
         - Confluence: Documents, documentation, wiki pages, spaces, knowledge base, articles
+        - Incident Templates: Registrar incidente, registrar problema, crear incidente, template de incidente, incidente mayor
         
         Today's date is {self.context.current_date} ({self.context.metadata["current_date_human"]}).
         
-        Only respond with "jira", "confluence", or "unsure".
+        Only respond with "jira", "confluence", "incident" or "unsure".
         """
         
         # Initialize the classifier agent
@@ -135,13 +138,13 @@ class OrchestratorAgent:
 
     def classify_query(self, query: str) -> str:
         """
-        Classify the query as related to Jira, Confluence, or unsure.
+        Classify the query as related to Jira, Confluence, Incident Templates, or unsure.
         
         Args:
             query: The user's query to classify
             
         Returns:
-            str: "jira", "confluence", or "unsure"
+            str: "jira", "confluence", "incident", or "unsure"
         """
         logfire.info(f"Classifying query: {query}")
         
@@ -155,6 +158,8 @@ class OrchestratorAgent:
                 return "jira"
             elif "confluence" in classification:
                 return "confluence"
+            elif "incident" in classification:
+                return "incident"
             else:
                 return "unsure"
         except Exception as e:
@@ -169,7 +174,7 @@ class OrchestratorAgent:
             query: The user's query
             
         Returns:
-            str: "jira" or "confluence"
+            str: "jira", "confluence", or "incident"
         """
         # If we have an active agent from previous conversation, use that
         # unless the query seems clearly related to the other agent
@@ -207,88 +212,51 @@ class OrchestratorAgent:
         """
         logfire.info(f"Processing message: {message}")
         
-        # Update the current date in context
-        self.context.update_current_date()
-        
-        # Update date in both agents' contexts
-        if "context" in self.jira_agent._deps.__dict__:
-            self.jira_agent._deps.context["current_date"] = self.context.current_date
-            self.jira_agent._deps.context["current_date_human"] = self.context.metadata["current_date_human"]
-            self.jira_agent._deps.context["weekday"] = self.context.metadata["weekday"]
+        try:
+            # Add the user message to the conversation history
+            self.context.add_user_message(message)
             
-        if "context" in self.confluence_agent._deps.__dict__:
-            self.confluence_agent._deps.context["current_date"] = self.context.current_date
-            self.confluence_agent._deps.context["current_date_human"] = self.context.metadata["current_date_human"]
-            self.confluence_agent._deps.context["weekday"] = self.context.metadata["weekday"]
-        
-        # Add user message to context
-        self.context.add_user_message(message)
-        
-        # Check if message involves date confusion
-        date_correction_keywords = ["fecha", "hoy", "día", "3 de noviembre", "2023"]
-        if any(keyword in message.lower() for keyword in date_correction_keywords) and any(term in message.lower() for term in ["fecha", "3 de noviembre", "2023"]):
-            now = datetime.now()
-            month_names = {
-                1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 
-                5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
-                9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre"
-            }
-            weekday_names = {
-                0: "lunes", 1: "martes", 2: "miércoles", 3: "jueves",
-                4: "viernes", 5: "sábado", 6: "domingo"
-            }
+            # Determine which agent to use
+            agent_type = self.determine_agent_with_context(message)
+            self.context.active_agent = agent_type
             
-            date_human = f"{now.day} de {month_names[now.month]} de {now.year}"
-            weekday = weekday_names[now.weekday()]
-            
-            if "3 de noviembre" in message.lower() or "noviembre" in message.lower() and "2023" in message.lower():
+            # Handle based on agent type
+            response = ""
+            if agent_type == "jira":
+                logfire.info("Using Jira agent")
+                response = self.jira_agent.process_message_sync(message)
+            elif agent_type == "confluence":
+                logfire.info("Using Confluence agent")
+                response = self.confluence_agent.process_message_sync(message)
+            elif agent_type == "incident":
+                logfire.info("Using Incident Template agent")
+                
+                # Informar al usuario que se utilizará el agente de incidentes
                 response = (
-                    f"Parece que hay cierta confusión con la fecha. Hoy no es el 3 de noviembre de 2023. "
-                    f"La fecha actual es {weekday.capitalize()}, {date_human}. "
-                    f"El sistema está configurado correctamente con la fecha actual. "
-                    f"¿En qué más puedo ayudarte?"
-                )
-            else:
-                response = (
-                    f"La fecha actual del sistema es {weekday.capitalize()}, {date_human}. "
-                    f"El sistema está actualizado con la fecha correcta. "
-                    f"¿Necesitas alguna otra información?"
+                    "Entendido. Necesitas registrar un incidente mayor. "
+                    "Te redirigiré al Agente de Templates de Incidentes (ATI) para recopilar toda la información necesaria. "
+                    "Por favor, ejecuta: streamlit run incident_template_app.py\n\n"
+                    "Una vez que hayas completado la información del incidente, los datos serán enviados "
+                    "automáticamente al agente de Confluence para crear la página correspondiente."
                 )
                 
-            self.context.add_assistant_message(response, "orchestrator")
-            return response
-        
-        # Determine which agent to use
-        agent_type = self.determine_agent_with_context(message)
-        self.context.active_agent = agent_type
-        
-        try:
-            # Append date context to message for date-sensitive queries
-            date_sensitive_keywords = ["hoy", "ayer", "fecha", "día", "semana", "mes"]
-            date_enhanced_message = message
+                # Nota: En una implementación más integrada, podríamos iniciar el agente directamente 
+                # y recuperar los datos para pasarlos al agente de Confluence, algo como:
+                #
+                # incident_data = self.incident_template_agent.create_incident_template_app()
+                # if incident_data:
+                #     # Pasar los datos al agente de Confluence para crear la página
+                #     confluence_response = self.confluence_agent.create_incident_page(incident_data)
+                #     response += f"\n\nIncidente registrado correctamente. {confluence_response}"
+            else:
+                logfire.warning(f"Unknown agent type: {agent_type}")
+                response = "Lo siento, no puedo determinar qué agente debe manejar esta consulta."
             
-            if any(keyword in message.lower() for keyword in date_sensitive_keywords):
-                # If date-related query, add date context but only for backend processing
-                self.jira_agent._deps.context["explicit_date_context"] = True
-                self.confluence_agent._deps.context["explicit_date_context"] = True
-            
-            # Delegate to the appropriate agent
-            if agent_type == "jira":
-                logfire.info("Delegating to Jira agent")
-                response = self.jira_agent.process_message_sync(date_enhanced_message)
-            else:  # confluence
-                logfire.info("Delegating to Confluence agent")
-                response = self.confluence_agent.process_message_sync(date_enhanced_message)
-            
-            # Add response to context
+            # Add the response to the conversation history
             self.context.add_assistant_message(response, agent_type)
             
             return response
+            
         except Exception as e:
-            error_msg = f"Error processing message: {str(e)}"
-            logfire.error(error_msg)
-            
-            # Add error message to context
-            self.context.add_assistant_message(error_msg, agent_type)
-            
-            return error_msg 
+            logfire.exception(f"Error processing message: {e}")
+            return f"Lo siento, ocurrió un error al procesar tu mensaje: {e}" 
