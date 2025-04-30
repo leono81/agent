@@ -111,6 +111,9 @@ class JiraAgent:
                 Tool(self.get_my_issues, takes_ctx=True, 
                     name="get_my_issues",
                     description="Obtiene las issues asignadas al usuario actual en Jira. Muestra las issues con su título, estado, y prioridad."),
+                Tool(self.get_my_worklogs_yesterday, takes_ctx=True, 
+                    name="get_my_worklogs_yesterday",
+                    description="Obtiene todos los registros de trabajo (worklogs) creados por el usuario actual ayer."),
                 Tool(self.search_issues, takes_ctx=True, 
                     name="search_issues",
                     description="Busca issues en Jira basado en un término de búsqueda. Útil para encontrar issues específicas por título, descripción o palabra clave."),
@@ -167,6 +170,13 @@ class JiraAgent:
                     "- Cuando el usuario seleccione una issue, SIEMPRE usa remember_current_issue para guardarla para futuras referencias. "
                     "- Si el usuario hace referencia a 'la issue actual', 'esta issue', 'la misma issue', etc., usa get_current_issue para obtener la issue actual. "
                     "- Si el usuario hace referencia a algo mencionado previamente, consulta el historial para recordar el contexto. "
+                    "\n\n"
+                    "FUNCIONALIDADES DE CONSULTA DE TIEMPO: "
+                    "- Para obtener todos los registros de trabajo del usuario actual ayer, utiliza get_my_worklogs_yesterday. "
+                    "  Esta herramienta es útil cuando el usuario quiere saber cuánto tiempo registró ayer o en qué issues trabajó. "
+                    "- La función solo devuelve los worklogs creados específicamente por el usuario actual, no muestra registros de otros usuarios."
+                    "- Para consultas como '¿qué hice ayer?', '¿cuánto tiempo registré ayer?', 'muéstrame mis worklogs de ayer', "
+                    "  usa directamente get_my_worklogs_yesterday sin realizar búsquedas adicionales. "
                     "\n\n"
                     "DIRECTRICES PARA BÚSQUEDA DE ISSUES: "
                     "- Para buscar issues, SIEMPRE utiliza la herramienta smart_search_issues. "
@@ -960,53 +970,143 @@ class JiraAgent:
     
     async def transition_issue(self, ctx: RunContext[JiraAgentDependencies], issue_key: str, transition_name: str) -> Dict[str, Any]:
         """
-        Cambia el estado de una issue de Jira utilizando una transición disponible.
+        Cambia el estado de una issue a través de una transición.
         
         Args:
             ctx: Contexto de ejecución con las dependencias
-            issue_key: Clave de la issue (ej. PSIMDESASW-1234)
+            issue_key: Clave de la issue
             transition_name: Nombre de la transición a aplicar
             
         Returns:
-            Dict[str, Any]: Resultado de la operación o error.
+            Dict[str, Any]: Resultado de la transición
         """
         try:
-            logger.info(f"Aplicando transición '{transition_name}' a issue {issue_key}")
+            logger.info(f"Intentando transicionar issue {issue_key} a '{transition_name}'")
             
-            # Primero obtener las transiciones disponibles
-            transitions_result = await self.get_issue_transitions(ctx, issue_key)
-            
-            if not transitions_result.get("success", False):
-                return transitions_result
+            # Obtener las transiciones disponibles
+            transitions = ctx.deps.jira_client.get_issue_transitions(issue_key)
             
             # Buscar la transición por nombre
             transition_id = None
-            for transition in transitions_result.get("transitions", []):
+            for transition in transitions:
                 if transition["name"].lower() == transition_name.lower():
                     transition_id = transition["id"]
                     break
             
             if not transition_id:
+                logger.warning(f"Transición '{transition_name}' no encontrada para {issue_key}")
                 return {
                     "success": False,
-                    "error": f"No se encontró la transición '{transition_name}' para la issue {issue_key}"
+                    "error": f"La transición '{transition_name}' no está disponible para esta issue"
                 }
             
             # Aplicar la transición
             result = ctx.deps.jira_client.transition_issue(issue_key, transition_id)
             
             if result:
-                logger.info(f"Transición aplicada correctamente a {issue_key}")
+                logger.info(f"Issue {issue_key} transicionada exitosamente a '{transition_name}'")
                 return {
                     "success": True,
-                    "message": f"Estado de la issue {issue_key} cambiado a '{transition_name}'"
+                    "issue_key": issue_key,
+                    "message": f"Estado de issue {issue_key} cambiado a través de la transición '{transition_name}'"
                 }
             else:
-                error_msg = f"Error al aplicar transición a {issue_key}"
-                logger.error(error_msg)
-                return {"success": False, "error": error_msg}
+                logger.error(f"Error al transicionar issue {issue_key}")
+                return {
+                    "success": False,
+                    "error": "Ocurrió un error al cambiar el estado de la issue"
+                }
+                
+        except Exception as e:
+            error_msg = f"Error al transicionar issue {issue_key}: {str(e)}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    async def get_my_worklogs_yesterday(self, ctx: RunContext[JiraAgentDependencies]) -> Dict[str, Any]:
+        """
+        Obtiene todos los registros de trabajo (worklogs) creados por el usuario actual ayer.
+        
+        Args:
+            ctx: Contexto de ejecución con las dependencias
+            
+        Returns:
+            Dict[str, Any]: Información sobre los worklogs de ayer
+        """
+        try:
+            logger.info("Obteniendo worklogs del usuario de ayer")
+            
+            # Llamar al método correspondiente en JiraClient
+            result = ctx.deps.jira_client.get_my_worklogs_yesterday()
+            
+            if not result.get("success", False):
+                logger.warning(f"Error al obtener worklogs de ayer: {result.get('error', 'Error desconocido')}")
+                return result
+            
+            # Si no hay worklogs, devolver mensaje amigable
+            if result.get("count", 0) == 0:
+                logger.info("No se encontraron worklogs de ayer")
+                return {
+                    "success": True,
+                    "count": 0,
+                    "date": result.get("date", ""),
+                    "message": "No registraste tiempo ayer"
+                }
+            
+            # Obtener nombre de usuario para personalizar el mensaje
+            username = result.get('username', 'Usuario actual')
+            
+            # Formatar y resumir los resultados para mayor claridad
+            worklogs = result.get("worklogs", [])
+            formatted_worklogs = []
+            
+            # Agrupar worklogs por issue para mejor visualización
+            issues_summary = {}
+            
+            for worklog in worklogs:
+                issue_key = worklog.get("issue_key", "")
+                
+                if issue_key not in issues_summary:
+                    issues_summary[issue_key] = {
+                        "key": issue_key,
+                        "summary": worklog.get("issue_summary", ""),
+                        "url": worklog.get("issue_url", ""),
+                        "total_seconds": 0,
+                        "entries": []
+                    }
+                
+                # Añadir tiempo al total de la issue
+                time_spent_seconds = worklog.get("time_spent_seconds", 0)
+                issues_summary[issue_key]["total_seconds"] += time_spent_seconds
+                
+                # Añadir entrada individual
+                issues_summary[issue_key]["entries"].append({
+                    "time_spent": worklog.get("time_spent", ""),
+                    "comment": worklog.get("comment", "Sin comentario"),
+                    "started": worklog.get("started", "")
+                })
+            
+            # Convertir el resumen a lista y formatear el tiempo total por issue
+            for issue_key, issue_data in issues_summary.items():
+                issue_data["total_time"] = self._format_seconds(issue_data["total_seconds"])
+                formatted_worklogs.append(issue_data)
+            
+            # Ordenar por tiempo total (descendente)
+            formatted_worklogs.sort(key=lambda x: x["total_seconds"], reverse=True)
+            
+            logger.info(f"Obtenidos {len(worklogs)} worklogs de ayer en {len(formatted_worklogs)} issues")
+            
+            return {
+                "success": True,
+                "count": len(worklogs),
+                "issues_count": len(formatted_worklogs),
+                "date": result.get("date", ""),
+                "total_time": result.get("total_formatted", ""),
+                "issues": formatted_worklogs,
+                "username": username,
+                "personal_message": f"Tú ({username}) registraste un total de {result.get('total_formatted', '')} ayer"
+            }
             
         except Exception as e:
-            error_msg = f"Error al cambiar estado de issue {issue_key}: {str(e)}"
+            error_msg = f"Error al obtener worklogs de ayer: {str(e)}"
             logger.error(error_msg)
             return {"success": False, "error": error_msg} 
