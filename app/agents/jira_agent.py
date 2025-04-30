@@ -113,7 +113,11 @@ class JiraAgent:
                     description="Obtiene las issues asignadas al usuario actual en Jira. Muestra las issues con su título, estado, y prioridad."),
                 Tool(self.get_my_worklogs_yesterday, takes_ctx=True, 
                     name="get_my_worklogs_yesterday",
-                    description="Obtiene y formatea los worklogs del usuario de ayer, incluyendo estado de 8h. La respuesta ya está formateada en markdown y lista para mostrar al usuario directamente."),
+                    description=(
+                        "Obtiene y formatea los worklogs del usuario de ayer, incluyendo estado de 8h. "
+                        "Si la respuesta contiene 'use_directly: True', debes usar el valor de 'markdown_output' directamente como tu respuesta final, sin modificarlo."
+                    )
+                ),
                 Tool(self.search_issues, takes_ctx=True, 
                     name="search_issues",
                     description="Busca issues en Jira basado en un término de búsqueda. Útil para encontrar issues específicas por título, descripción o palabra clave."),
@@ -1045,24 +1049,25 @@ class JiraAgent:
             worklogs_list = result.get('worklogs', [])
 
             # Construir el mensaje de estado
-            status_message = f"👤 **Usuario:** {username}\n🗓️ **Fecha:** {yesterday_date}\n"
+            # Usar saltos de línea dobles (\n\n) para mejor espaciado en markdown
+            status_message = f"👤 **Usuario:** {username}\n\n🗓️ **Fecha:** {yesterday_date}\n\n"
             
             if total_seconds >= target_seconds:
                 # Mensaje de felicitación
-                status_message += f"\n🎉 **¡Excelente!** Registraste **{total_formatted}**. ¡Felicidades por completar tus 8 horas! ({worklogs_count} registros)."
+                status_message += f"🎉 **¡Excelente!** Registraste **{total_formatted}**. ¡Felicidades por completar tus 8 horas! ({worklogs_count} registros)."
             else:
                 # Mensaje de refuerzo positivo
                 missing_seconds = target_seconds - total_seconds
                 missing_formatted = self._format_seconds(missing_seconds)
                 status_message += (
-                    f"\n💪 **¡Casi lo tienes!** Registraste **{total_formatted}**. \n"
+                    f"💪 **¡Casi lo tienes!** Registraste **{total_formatted}**. \n\n"
                     f"   Te faltan solo **{missing_formatted}** para completar las 8 horas. ({worklogs_count} registros)."
                 )
 
             # Construir el detalle de worklogs si existen
             details = ""
             if worklogs_list:
-                details += "\n\n📝 **Resumen de Registros:**\n"
+                details += "\n\n---\n\n📝 **Resumen de Registros:**\n"
                 # Agrupar por issue para un mejor resumen
                 issues_summary = {}
                 for wl in worklogs_list:
@@ -1080,15 +1085,18 @@ class JiraAgent:
 
                 for key, data in sorted_issues:
                     issue_total_time = self._format_seconds(data['total_seconds'])
-                    details += f"\n- **{key}** ({data['summary']}): **{issue_total_time}**\n"
+                    # Usar \n\n para separar cada issue
+                    details += f"\n\n- **{key}** ({data['summary']}): **{issue_total_time}**"
                     # Opcional: añadir detalles de cada entrada si se desea más granularidad
                     # for entry in data['entries']:
-                    #     details += f"    - {entry['time']} ({entry['comment'] if entry['comment'] else 'Sin comentario'})\n"
+                    #     details += f"\n    - {entry['time']} ({entry['comment'] if entry['comment'] else 'Sin comentario'})"
 
-            final_response = f"{status_message}{details}"
+            final_response_markdown = f"{status_message}{details}"
             logger.info("Worklogs de ayer obtenidos y formateados correctamente.")
-            return {"response": final_response}
+            # Devolver estructura específica para indicar respuesta preformateada
+            return {"markdown_output": final_response_markdown, "use_directly": True}
 
         except Exception as e:
             logger.exception("Excepción inesperada al obtener/formatear worklogs de ayer")
+            # Mantener el formato de error simple
             return {"response": f"❌ Ocurrió un error inesperado al procesar tu solicitud de worklogs de ayer: {str(e)}"} 
