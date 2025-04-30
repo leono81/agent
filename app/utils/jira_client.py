@@ -835,143 +835,158 @@ class JiraClient:
         logger.debug(f"URL generada para {issue_key}: {issue_url}")
         return issue_url
     
-    def get_my_worklogs_yesterday(self, use_cache: bool = True) -> Dict[str, Any]:
+    def get_user_worklogs_for_date(self, date_str: str, use_cache: bool = True) -> Dict[str, Any]:
         """
-        Obtiene los registros de trabajo creados por el usuario actual ayer.
-        
-        Esta función usa JQL para buscar issues donde el usuario actual registró tiempo ayer,
-        y luego filtra los worklogs para incluir solo los que efectivamente fueron creados ayer
-        y por el usuario actual.
+        Obtiene los worklogs de un usuario para una fecha específica utilizando
+        la API de Jira para obtener directamente el tiempo registrado.
         
         Args:
-            use_cache: Si se debe usar la caché (por defecto True).
+            date_str: Fecha en formato YYYY-MM-DD
+            use_cache: Si se debe usar la caché
             
         Returns:
-            dict: Diccionario con información sobre los worklogs de ayer y el tiempo total.
+            dict: Información de los worklogs
         """
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        cache_key = f"my_worklogs_{yesterday}"
+        cache_key = f"user_worklogs_{date_str}"
         
         if use_cache:
             cached = self._cache_get(cache_key)
             if cached:
                 return cached
-        
+                
         try:
             # Obtener información del usuario actual
-            try:
-                current_user = self.jira.myself()
-                current_username = current_user.get('name', '')
-                current_account_id = current_user.get('accountId', '')
-                current_display_name = current_user.get('displayName', '')
+            current_user = self.jira.myself()
+            current_username = current_user.get('name', '')
+            current_account_id = current_user.get('accountId', '')
+            current_display_name = current_user.get('displayName', '')
+            
+            logger.info(f"Obteniendo worklogs para {current_display_name} en la fecha {date_str}")
+            
+            # Construir la fecha con formato ISO 8601 (requerido por Jira)
+            start_date = f"{date_str}T00:00:00.000+0000"
+            end_date = f"{date_str}T23:59:59.999+0000"
+            
+            # API para obtener los worklogs del usuario en un rango de fechas
+            endpoint = "/rest/api/2/worklog/updated"
+            
+            # Consultar la API para obtener IDs de worklogs actualizados
+            since = 0  # Desde el primer worklog
+            all_worklog_ids = []
+            
+            while True:
+                # Parámetros para obtener IDs de worklogs actualizados
+                params = {"since": since}
                 
-                logger.info(f"Usuario actual: {current_display_name} (username: {current_username}, accountId: {current_account_id})")
-            except Exception as e:
-                logger.warning(f"No se pudo obtener información del usuario actual: {str(e)}")
-                current_username = JIRA_USERNAME
-                current_account_id = ''
-                current_display_name = ''
+                response = self.jira.get(endpoint, params=params)
+                
+                if not response or 'values' not in response:
+                    break
+                    
+                worklog_updates = response.get('values', [])
+                if not worklog_updates:
+                    break
+                    
+                # Actualizar el valor 'since' para la próxima iteración
+                since = response.get('lastPage', since)
+                if since == response.get('lastPage', since):
+                    # No hay más páginas
+                    break
+                    
+                # Guardar los IDs de los worklogs
+                for update in worklog_updates:
+                    worklog_id = update.get('worklogId')
+                    if worklog_id:
+                        all_worklog_ids.append(worklog_id)
+                        
+            logger.info(f"Encontrados {len(all_worklog_ids)} IDs de worklogs totales")
             
-            # JQL para encontrar issues donde el usuario registró tiempo ayer
-            jql = 'worklogAuthor = currentUser() AND worklogDate = "-1d"'
-            
-            # Realizar la búsqueda, solicitando específicamente el campo worklog
-            issues = self.jira.jql(jql, fields=["summary", "worklog"])
-            
-            logger.info(f"Buscando worklogs creados ayer ({yesterday}) por el usuario actual")
-            
-            if 'issues' not in issues:
-                logger.warning("Respuesta inesperada de Jira: 'issues' no encontrado en la respuesta")
-                return {
-                    "success": False,
-                    "error": "Respuesta inesperada de Jira: 'issues' no encontrado",
-                    "date": yesterday
-                }
-            
-            total_seconds = 0
-            total_formatted = "00:00:00"
+            # Obtener los detalles de cada worklog y filtrar por fecha y usuario
             filtered_worklogs = []
+            total_seconds = 0
+            issue_data = {}  # Para almacenar información de las issues
             
-            # Procesar cada issue que cumple con el criterio JQL
-            for issue in issues['issues']:
-                issue_key = issue.get('key', 'Sin clave')
-                summary = issue.get('fields', {}).get('summary', 'Sin título')
-                
-                # Obtener worklogs de la issue
-                worklog_data = issue.get('fields', {}).get('worklog', {})
-                
-                # Verificar si hay worklogs en la respuesta
-                if not worklog_data or 'worklogs' not in worklog_data:
-                    # Si no hay worklogs en la respuesta, obtenerlos directamente
-                    try:
-                        worklogs = self.get_issue_worklogs(issue_key)
-                    except Exception as e:
-                        logger.error(f"Error al obtener worklogs adicionales para {issue_key}: {str(e)}")
-                        continue
-                else:
-                    worklogs = worklog_data['worklogs']
-                
-                # Filtrar worklogs para incluir solo los de ayer y del usuario actual
-                for worklog in worklogs:
-                    # Verificar si el autor es el usuario actual
+            for worklog_id in all_worklog_ids:
+                worklog_endpoint = f"/rest/api/2/worklog/{worklog_id}"
+                try:
+                    worklog = self.jira.get(worklog_endpoint)
+                    
+                    # Verificar si el worklog es del usuario actual
                     author = worklog.get('author', {})
-                    author_name = author.get('name', '')
                     author_account_id = author.get('accountId', '')
-                    author_display_name = author.get('displayName', '')
                     
-                    # Verificar que el autor coincida con el usuario actual
-                    is_current_user = False
-                    if current_account_id and author_account_id:
-                        # Preferir comparación por accountId (más confiable)
-                        is_current_user = current_account_id == author_account_id
-                    elif current_username and author_name:
-                        # Comparación por username como fallback
-                        is_current_user = current_username == author_name
-                    elif current_display_name and author_display_name:
-                        # Comparación por displayName como último recurso
-                        is_current_user = current_display_name == author_display_name
-                    
+                    is_current_user = author_account_id == current_account_id
                     if not is_current_user:
-                        logger.debug(f"Saltando worklog que no pertenece al usuario actual: {author_display_name}")
                         continue
-                    
-                    # Obtener y formatear la fecha del worklog
+                        
+                    # Verificar si el worklog es de la fecha solicitada
                     started = worklog.get('started', '')
-                    if started and 'T' in started:
-                        worklog_date = started.split('T')[0]  # Extraer solo la fecha (YYYY-MM-DD)
-                    else:
-                        worklog_date = ''
+                    if not started or 'T' not in started:
+                        continue
+                        
+                    worklog_date = started.split('T')[0]
+                    if worklog_date != date_str:
+                        continue
+                        
+                    # Si llegamos aquí, el worklog cumple ambos criterios
+                    issue_id = worklog.get('issueId', '')
+                    if not issue_id:
+                        continue
+                        
+                    # Si es la primera vez que vemos esta issue, obtener su información
+                    if issue_id not in issue_data:
+                        try:
+                            issue_info = self.jira.issue(issue_id)
+                            issue_key = issue_info.get('key', '')
+                            issue_summary = issue_info.get('fields', {}).get('summary', 'Sin título')
+                            issue_data[issue_id] = {
+                                'key': issue_key,
+                                'summary': issue_summary
+                            }
+                        except Exception as e:
+                            logger.warning(f"Error al obtener información de la issue {issue_id}: {str(e)}")
+                            issue_data[issue_id] = {
+                                'key': f"ISSUE-{issue_id}",
+                                'summary': 'Sin título'
+                            }
                     
-                    # Si la fecha coincide con ayer
-                    if worklog_date == yesterday:
-                        # Recopilar datos relevantes del worklog
-                        time_spent_seconds = worklog.get('timeSpentSeconds', 0)
-                        time_spent = worklog.get('timeSpent', '')
-                        comment = worklog.get('comment', 'Sin comentario')
-                        
-                        # Añadir al resultado
-                        filtered_worklogs.append({
-                            "issue_key": issue_key,
-                            "issue_summary": summary,
-                            "issue_url": self.get_issue_url(issue_key),
-                            "started": started,
-                            "time_spent_seconds": time_spent_seconds,
-                            "time_spent": time_spent,
-                            "comment": comment,
-                            "author": author_display_name
-                        })
-                        
-                        # Actualizar total
-                        total_seconds += time_spent_seconds
-            
+                    # Obtener información de la issue
+                    issue_key = issue_data[issue_id]['key']
+                    issue_summary = issue_data[issue_id]['summary']
+                    
+                    # Recopilar datos relevantes del worklog
+                    author_display_name = author.get('displayName', '')
+                    time_spent = worklog.get('timeSpent', '')
+                    time_spent_seconds = worklog.get('timeSpentSeconds', 0)
+                    comment = worklog.get('comment', 'Sin comentario')
+                    
+                    logger.info(f"Encontrado worklog: {issue_key} - {time_spent} - {comment}")
+                    
+                    # Añadir al resultado
+                    filtered_worklogs.append({
+                        "issue_key": issue_key,
+                        "issue_summary": issue_summary,
+                        "issue_url": self.get_issue_url(issue_key),
+                        "started": started,
+                        "time_spent_seconds": time_spent_seconds,
+                        "time_spent": time_spent,
+                        "comment": comment,
+                        "author": author_display_name
+                    })
+                    
+                    # Actualizar total
+                    total_seconds += time_spent_seconds
+                    
+                except Exception as e:
+                    logger.warning(f"Error al procesar worklog {worklog_id}: {str(e)}")
+                    
             # Formatear tiempo total
-            if total_seconds > 0:
-                total_formatted = self._format_seconds(total_seconds)
+            total_formatted = self._format_seconds(total_seconds) if total_seconds > 0 else "00:00:00"
             
             # Preparar resultado
             result = {
                 "success": True,
-                "date": yesterday,
+                "date": date_str,
                 "count": len(filtered_worklogs),
                 "total_seconds": total_seconds,
                 "total_formatted": total_formatted,
@@ -979,7 +994,7 @@ class JiraClient:
                 "username": current_display_name or current_username
             }
             
-            logger.info(f"Encontrados {len(filtered_worklogs)} worklogs para el {yesterday}, total: {total_formatted}")
+            logger.info(f"Encontrados {len(filtered_worklogs)} worklogs para {date_str}, total: {total_formatted}")
             
             # Almacenar en caché
             self._cache_set(cache_key, result)
@@ -987,10 +1002,279 @@ class JiraClient:
             return result
             
         except Exception as e:
-            error_msg = f"Error al obtener worklogs de ayer: {str(e)}"
+            error_msg = f"Error al obtener worklogs para la fecha {date_str}: {str(e)}"
             logger.error(error_msg)
             return {
                 "success": False,
                 "error": error_msg,
+                "date": date_str
+            }
+    
+    def get_my_worklogs_yesterday(self, use_cache: bool = True) -> Dict[str, Any]:
+        """
+        Obtiene los registros de trabajo creados por el usuario actual ayer.
+
+        Esta función implementa una estrategia robusta:
+        1. Busca issues donde el usuario actual registró trabajo ayer usando JQL
+           (solo obtiene keys y summaries).
+        2. Para cada issue encontrada, obtiene TODOS sus worklogs usando el endpoint
+           específico /issue/{key}/worklog con paginación explícita.
+        3. Filtra los worklogs obtenidos por autor (accountId) y fecha (ayer).
+        4. Suma el tiempo de los worklogs coincidentes.
+
+        Args:
+            use_cache: Si se debe usar la caché (por defecto True).
+
+        Returns:
+            dict: Diccionario con información sobre los worklogs de ayer y el tiempo total.
+        """
+        yesterday_dt = datetime.now() - timedelta(days=1)
+        yesterday = yesterday_dt.strftime("%Y-%m-%d")
+        cache_key = f"my_worklogs_{yesterday}_v2" # Nueva key por cambio de lógica
+
+        if use_cache:
+            cached = self._cache_get(cache_key)
+            if cached:
+                return cached
+
+        try:
+            # 1. Obtener información del usuario actual
+            try:
+                current_user = self.jira.myself()
+                current_account_id = current_user.get('accountId')
+                current_display_name = current_user.get('displayName', '')
+                if not current_account_id:
+                    logger.error("No se pudo obtener el accountId del usuario actual. No se puede continuar.")
+                    return {
+                        "success": False,
+                        "error": "No se pudo obtener el accountId del usuario actual.",
+                        "date": yesterday
+                    }
+                logger.info(f"Usuario actual: {current_display_name} (accountId: {current_account_id})")
+            except Exception as e:
+                logger.error(f"Error crítico al obtener información del usuario actual: {str(e)}")
+                return {
+                    "success": False,
+                    "error": f"Error al obtener información del usuario actual: {str(e)}",
+                    "date": yesterday
+                }
+
+            # 2. JQL para encontrar issues candidatas (solo necesitamos key y summary)
+            jql = 'worklogAuthor = currentUser() AND worklogDate = "-1d"'
+            logger.info(f"Ejecutando consulta JQL inicial: {jql}")
+            initial_search_results = self.jira.jql(jql, fields=["summary", "key"], limit=200) # Límite alto para issues
+
+            if 'issues' not in initial_search_results:
+                logger.warning("Respuesta inesperada de Jira (búsqueda inicial): 'issues' no encontrado")
+                return {
+                    "success": False,
+                    "error": "Respuesta inesperada de Jira: 'issues' no encontrado en búsqueda inicial",
+                    "date": yesterday
+                }
+
+            candidate_issues = initial_search_results['issues']
+            total_candidate_issues = len(candidate_issues)
+            logger.info(f"Encontradas {total_candidate_issues} issues candidatas con worklogs del usuario ayer.")
+
+            total_seconds = 0
+            filtered_worklogs = []
+            processed_issues_keys = set()
+
+            # 3. Iterar sobre las issues candidatas y obtener/filtrar worklogs con paginación
+            for issue_data in candidate_issues:
+                issue_key = issue_data.get('key')
+                issue_summary = issue_data.get('fields', {}).get('summary', 'Sin título')
+                if not issue_key:
+                    logger.warning("Issue encontrada sin key en la respuesta JQL, saltando.")
+                    continue
+
+                logger.info(f"Procesando issue candidata: {issue_key} - {issue_summary}")
+                processed_issues_keys.add(issue_key)
+                
+                # Variables para paginación de worklogs de esta issue
+                start_at = 0
+                max_results = 100 # Tamaño de página razonable
+                total_worklogs_for_issue = 0
+                processed_count = 0
+                issue_worklogs_found_count = 0
+                
+                worklogs_endpoint = f"/rest/api/3/issue/{issue_key}/worklog"
+
+                while True: # Bucle de paginación para worklogs de la issue actual
+                    params = {'startAt': start_at, 'maxResults': max_results}
+                    logger.debug(f"  Obteniendo página de worklogs para {issue_key}: startAt={start_at}, maxResults={max_results}")
+
+                    try:
+                        # Usamos el método 'get' de la librería para llamar al endpoint específico
+                        response_data = self.jira.get(worklogs_endpoint, params=params)
+
+                        if not isinstance(response_data, dict):
+                             logger.warning(f"  Respuesta inesperada para worklogs de {issue_key} (no es dict): {response_data}")
+                             break # Salir de paginación para esta issue
+
+                        worklogs_page = response_data.get('worklogs', [])
+                        current_page_size = len(worklogs_page)
+                        total_worklogs_for_issue = response_data.get('total', 0) # Total real de worklogs para esta issue
+                        processed_count += current_page_size
+
+                        if not worklogs_page:
+                            logger.debug(f"  Página vacía encontrada para {issue_key} en startAt={start_at}. Terminando paginación.")
+                            break
+
+                        logger.debug(f"    Recibidos {current_page_size} worklogs en esta página (Total Issue: {total_worklogs_for_issue}). Procesados hasta ahora: {processed_count}")
+
+                        # 4. Filtrar worklogs en la página actual
+                        for worklog in worklogs_page:
+                            # Verificar autor por accountId
+                            author = worklog.get('author', {})
+                            author_account_id = author.get('accountId')
+                            if author_account_id != current_account_id:
+                                continue # No es del usuario actual
+
+                            # Verificar fecha
+                            started = worklog.get('started', '')
+                            worklog_date_str = ''
+                            try:
+                                if started:
+                                     # *** CAMBIO PRINCIPAL AQUÍ: Usar strptime ***
+                                     # Usar strptime con el formato específico incluyendo el offset %z
+                                     # %z maneja offsets como -0300, +0500, etc.
+                                     worklog_dt = datetime.strptime(started, '%Y-%m-%dT%H:%M:%S.%f%z')
+
+                                     # Comparar solo la parte de la fecha (asumiendo que 'yesterday' es string YYYY-MM-DD)
+                                     worklog_date_str = worklog_dt.date().isoformat() # Convertir a string YYYY-MM-DD
+
+                            except ValueError as date_e:
+                                # Loguear la cadena que falló y el error específico
+                                logger.warning(f"      [WARN] Error parseando fecha del worklog ID {worklog.get('id')} ('{started}') con strptime: {date_e}")
+                                continue # Saltar si no se puede parsear la fecha
+                            except Exception as date_e: # Captura general por si acaso
+                                logger.error(f"      [ERROR] Error inesperado parseando fecha del worklog ID {worklog.get('id')} ('{started}'): {date_e}")
+                                continue
+
+                            if worklog_date_str == yesterday:
+                                # ¡Coincidencia! Añadir al resultado
+                                time_spent_seconds = worklog.get('timeSpentSeconds', 0)
+                                time_spent = worklog.get('timeSpent', '')
+                                comment = worklog.get('comment', 'Sin comentario')
+                                author_display_name = author.get('displayName', current_display_name) # Usar el display name del worklog si está
+
+                                logger.info(f"      [MATCH] Worklog encontrado: Issue={issue_key}, Tiempo={time_spent}, Fecha={started}")
+
+                                filtered_worklogs.append({
+                                    "issue_key": issue_key,
+                                    "issue_summary": issue_summary,
+                                    "issue_url": self.get_issue_url(issue_key),
+                                    "started": started,
+                                    "time_spent_seconds": time_spent_seconds,
+                                    "time_spent": time_spent,
+                                    "comment": comment,
+                                    "author": author_display_name,
+                                    "worklog_id": worklog.get('id')
+                                })
+                                total_seconds += time_spent_seconds
+                                issue_worklogs_found_count += 1
+
+                        # 5. Decidir si continuar paginando
+                        if processed_count >= total_worklogs_for_issue:
+                            logger.debug(f"  Paginación completada para {issue_key}. Procesados: {processed_count}/{total_worklogs_for_issue}")
+                            break
+                        else:
+                            start_at += current_page_size # Preparar para la siguiente página
+
+                    except Exception as page_e:
+                        logger.error(f"  Error obteniendo/procesando página de worklogs para {issue_key} en startAt={start_at}: {page_e}")
+                        # Considerar si reintentar o abortar para esta issue
+                        break # Abortar paginación para esta issue en caso de error grave
+
+                logger.info(f"  Terminado procesamiento de {issue_key}. Encontrados {issue_worklogs_found_count} worklogs coincidentes de {total_worklogs_for_issue} totales.")
+
+
+            # 6. Formatear resultado final
+            total_formatted = self._format_seconds(total_seconds) if total_seconds > 0 else "00:00:00"
+            final_count = len(filtered_worklogs)
+
+            result = {
+                "success": True,
+                "date": yesterday,
+                "count": final_count,
+                "total_seconds": total_seconds,
+                "total_formatted": total_formatted,
+                "worklogs": filtered_worklogs,
+                "username": current_display_name,
+                "processed_issues": list(processed_issues_keys),
+                "candidate_issue_count": total_candidate_issues
+            }
+
+            logger.info(f"Proceso completado. Encontrados {final_count} worklogs para el {yesterday}, total: {total_formatted}. Issues procesadas: {len(processed_issues_keys)}.")
+
+            # Almacenar en caché
+            self._cache_set(cache_key, result)
+            return result
+
+        except Exception as e:
+            error_msg = f"Error general al obtener worklogs de ayer: {str(e)}"
+            logger.exception(error_msg) # Usar exception para incluir traceback
+            return {
+                "success": False,
+                "error": error_msg,
                 "date": yesterday
-            } 
+            }
+            
+    def get_issue_worklogs_for_date(self, issue_key: str, date_str: str, user_account_id: str = None) -> List[Dict]:
+        """
+        Obtiene los worklogs de una issue específica para una fecha concreta y opcionalmente
+        filtra por el ID de cuenta del usuario.
+        
+        Args:
+            issue_key: El identificador de la issue.
+            date_str: La fecha en formato YYYY-MM-DD.
+            user_account_id: Opcional, el ID de cuenta del usuario.
+            
+        Returns:
+            List[Dict]: Lista de worklogs que coinciden con los criterios.
+        """
+        try:
+            # Para issues con muchos worklogs, como Dailys, podemos usar JQL específico
+            jql = f'issueKey = "{issue_key}" AND worklogDate = "{date_str}"'
+            if user_account_id:
+                jql += f' AND worklogAuthor = "{user_account_id}"'
+                
+            logger.info(f"Buscando worklogs específicos con JQL: {jql}")
+            
+            result = self.jira.jql(jql, fields=["worklog"])
+            
+            filtered_worklogs = []
+            
+            if 'issues' in result and len(result['issues']) > 0:
+                issue = result['issues'][0]
+                
+                if 'fields' in issue and 'worklog' in issue['fields'] and 'worklogs' in issue['fields']['worklog']:
+                    worklogs = issue['fields']['worklog']['worklogs']
+                    
+                    # Filtrar por fecha y usuario (redundante pero por seguridad)
+                    for worklog in worklogs:
+                        # Verificar fecha
+                        started = worklog.get('started', '')
+                        worklog_date = started.split('T')[0] if started and 'T' in started else ''
+                        
+                        if worklog_date != date_str:
+                            continue
+                            
+                        # Verificar usuario si se proporcionó
+                        if user_account_id:
+                            author = worklog.get('author', {})
+                            author_account_id = author.get('accountId', '')
+                            
+                            if author_account_id != user_account_id:
+                                continue
+                                
+                        # Si llegamos aquí, el worklog cumple los criterios
+                        filtered_worklogs.append(worklog)
+            
+            logger.info(f"Encontrados {len(filtered_worklogs)} worklogs específicos para {issue_key} en fecha {date_str}")
+            return filtered_worklogs
+            
+        except Exception as e:
+            logger.warning(f"Error al obtener worklogs específicos para {issue_key}: {str(e)}")
+            return [] 

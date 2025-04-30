@@ -113,7 +113,7 @@ class JiraAgent:
                     description="Obtiene las issues asignadas al usuario actual en Jira. Muestra las issues con su título, estado, y prioridad."),
                 Tool(self.get_my_worklogs_yesterday, takes_ctx=True, 
                     name="get_my_worklogs_yesterday",
-                    description="Obtiene todos los registros de trabajo (worklogs) creados por el usuario actual ayer."),
+                    description="Obtiene y formatea los worklogs del usuario de ayer, incluyendo estado de 8h. La respuesta ya está formateada en markdown y lista para mostrar al usuario directamente."),
                 Tool(self.search_issues, takes_ctx=True, 
                     name="search_issues",
                     description="Busca issues en Jira basado en un término de búsqueda. Útil para encontrar issues específicas por título, descripción o palabra clave."),
@@ -1024,89 +1024,71 @@ class JiraAgent:
     
     async def get_my_worklogs_yesterday(self, ctx: RunContext[JiraAgentDependencies]) -> Dict[str, Any]:
         """
-        Obtiene todos los registros de trabajo (worklogs) creados por el usuario actual ayer.
-        
-        Args:
-            ctx: Contexto de ejecución con las dependencias
-            
-        Returns:
-            Dict[str, Any]: Información sobre los worklogs de ayer
+        Obtiene y formatea los worklogs del usuario de ayer, incluyendo estado de 8h.
         """
+        logger.info("Obteniendo worklogs de ayer para el usuario")
+        target_seconds = 8 * 3600  # 8 horas
+
         try:
-            logger.info("Obteniendo worklogs del usuario de ayer")
+            result = ctx.deps.jira_client.get_my_worklogs_yesterday(use_cache=False) # Desactivar caché para obtener siempre lo último
+
+            if not result.get('success', False):
+                error_msg = result.get('error', 'Error desconocido al obtener worklogs.')
+                logger.error(f"Error al obtener worklogs de ayer: {error_msg}")
+                return {"response": f"❌ Hubo un error al obtener tus worklogs de ayer: {error_msg}"}
+
+            total_seconds = result.get('total_seconds', 0)
+            total_formatted = self._format_seconds(total_seconds) # Usar _format_seconds de la clase
+            worklogs_count = result.get('count', 0)
+            username = result.get('username', 'Usuario')
+            yesterday_date = result.get('date', 'Ayer')
+            worklogs_list = result.get('worklogs', [])
+
+            # Construir el mensaje de estado
+            status_message = f"👤 **Usuario:** {username}\n🗓️ **Fecha:** {yesterday_date}\n"
             
-            # Llamar al método correspondiente en JiraClient
-            result = ctx.deps.jira_client.get_my_worklogs_yesterday()
-            
-            if not result.get("success", False):
-                logger.warning(f"Error al obtener worklogs de ayer: {result.get('error', 'Error desconocido')}")
-                return result
-            
-            # Si no hay worklogs, devolver mensaje amigable
-            if result.get("count", 0) == 0:
-                logger.info("No se encontraron worklogs de ayer")
-                return {
-                    "success": True,
-                    "count": 0,
-                    "date": result.get("date", ""),
-                    "message": "No registraste tiempo ayer"
-                }
-            
-            # Obtener nombre de usuario para personalizar el mensaje
-            username = result.get('username', 'Usuario actual')
-            
-            # Formatar y resumir los resultados para mayor claridad
-            worklogs = result.get("worklogs", [])
-            formatted_worklogs = []
-            
-            # Agrupar worklogs por issue para mejor visualización
-            issues_summary = {}
-            
-            for worklog in worklogs:
-                issue_key = worklog.get("issue_key", "")
+            if total_seconds >= target_seconds:
+                # Mensaje de felicitación
+                status_message += f"\n🎉 **¡Excelente!** Registraste **{total_formatted}**. ¡Felicidades por completar tus 8 horas! ({worklogs_count} registros)."
+            else:
+                # Mensaje de refuerzo positivo
+                missing_seconds = target_seconds - total_seconds
+                missing_formatted = self._format_seconds(missing_seconds)
+                status_message += (
+                    f"\n💪 **¡Casi lo tienes!** Registraste **{total_formatted}**. \n"
+                    f"   Te faltan solo **{missing_formatted}** para completar las 8 horas. ({worklogs_count} registros)."
+                )
+
+            # Construir el detalle de worklogs si existen
+            details = ""
+            if worklogs_list:
+                details += "\n\n📝 **Resumen de Registros:**\n"
+                # Agrupar por issue para un mejor resumen
+                issues_summary = {}
+                for wl in worklogs_list:
+                    key = wl.get('issue_key', 'N/A')
+                    summary = wl.get('issue_summary', 'Sin título')
+                    seconds = wl.get('time_spent_seconds', 0)
+                    comment = wl.get('comment', '')
+                    if key not in issues_summary:
+                        issues_summary[key] = {'summary': summary, 'total_seconds': 0, 'entries': []}
+                    issues_summary[key]['total_seconds'] += seconds
+                    issues_summary[key]['entries'].append({'time': self._format_seconds(seconds), 'comment': comment})
                 
-                if issue_key not in issues_summary:
-                    issues_summary[issue_key] = {
-                        "key": issue_key,
-                        "summary": worklog.get("issue_summary", ""),
-                        "url": worklog.get("issue_url", ""),
-                        "total_seconds": 0,
-                        "entries": []
-                    }
-                
-                # Añadir tiempo al total de la issue
-                time_spent_seconds = worklog.get("time_spent_seconds", 0)
-                issues_summary[issue_key]["total_seconds"] += time_spent_seconds
-                
-                # Añadir entrada individual
-                issues_summary[issue_key]["entries"].append({
-                    "time_spent": worklog.get("time_spent", ""),
-                    "comment": worklog.get("comment", "Sin comentario"),
-                    "started": worklog.get("started", "")
-                })
-            
-            # Convertir el resumen a lista y formatear el tiempo total por issue
-            for issue_key, issue_data in issues_summary.items():
-                issue_data["total_time"] = self._format_seconds(issue_data["total_seconds"])
-                formatted_worklogs.append(issue_data)
-            
-            # Ordenar por tiempo total (descendente)
-            formatted_worklogs.sort(key=lambda x: x["total_seconds"], reverse=True)
-            
-            logger.info(f"Obtenidos {len(worklogs)} worklogs de ayer en {len(formatted_worklogs)} issues")
-            
-            return {
-                "success": True,
-                "count": len(worklogs),
-                "issues_count": len(formatted_worklogs),
-                "date": result.get("date", ""),
-                "total_time": result.get("total_formatted", ""),
-                "issues": formatted_worklogs,
-                "username": username,
-                "personal_message": f"Tú ({username}) registraste un total de {result.get('total_formatted', '')} ayer"
-            }
-            
+                # Ordenar issues por tiempo descendente
+                sorted_issues = sorted(issues_summary.items(), key=lambda item: item[1]['total_seconds'], reverse=True)
+
+                for key, data in sorted_issues:
+                    issue_total_time = self._format_seconds(data['total_seconds'])
+                    details += f"\n- **{key}** ({data['summary']}): **{issue_total_time}**\n"
+                    # Opcional: añadir detalles de cada entrada si se desea más granularidad
+                    # for entry in data['entries']:
+                    #     details += f"    - {entry['time']} ({entry['comment'] if entry['comment'] else 'Sin comentario'})\n"
+
+            final_response = f"{status_message}{details}"
+            logger.info("Worklogs de ayer obtenidos y formateados correctamente.")
+            return {"response": final_response}
+
         except Exception as e:
-            error_msg = f"Error al obtener worklogs de ayer: {str(e)}"
-            logger.error(error_msg)
-            return {"success": False, "error": error_msg} 
+            logger.exception("Excepción inesperada al obtener/formatear worklogs de ayer")
+            return {"response": f"❌ Ocurrió un error inesperado al procesar tu solicitud de worklogs de ayer: {str(e)}"} 
