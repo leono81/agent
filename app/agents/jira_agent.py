@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 import re  # Importar regex para parsing
+import locale # Importar locale
 
 from pydantic_ai import Agent, RunContext, Tool
 from pydantic import BaseModel, Field
@@ -24,8 +25,20 @@ except ImportError:
 if TYPE_CHECKING:
     from .jira_agent import JiraAgent
 
-# Configurar logger
+# Configurar logger ANTES de intentar usarlo
 logger = get_logger("jira_agent")
+
+# Configurar locale a español para parsear meses
+try:
+    # Intentar configuración común para Linux/macOS
+    locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8') 
+except locale.Error:
+    try:
+        # Intentar configuración alternativa/Windows
+        locale.setlocale(locale.LC_TIME, 'es-ES') 
+    except locale.Error:
+        # Ahora el logger existe, así que esto funcionará
+        logger.warning("No se pudo configurar el locale a español (es_ES o es-ES). El parseo de meses en texto puede fallar.")
 
 # Configurar logfire para el agente (si está disponible)
 use_logfire = False
@@ -147,7 +160,12 @@ class JiraAgent:
                     description="Cambia el estado de una issue de Jira utilizando una transición disponible."),
                 Tool(self.get_current_time_tracking, takes_ctx=True, 
                     name="get_current_time_tracking",
-                    description="Obtiene información detallada sobre el tiempo registrado para la issue especificada, incluyendo tiempo estimado, tiempo gastado, y tiempo restante.")
+                    description="Obtiene información detallada sobre el tiempo registrado para la issue especificada, incluyendo tiempo estimado, tiempo gastado, y tiempo restante."),
+                Tool(self.get_my_worklogs_for_date, takes_ctx=True, 
+                    name="get_my_worklogs_for_date",
+                    description="Obtiene y formatea los worklogs del usuario para una fecha específica, incluyendo estado de 8h. "
+                    "Si la respuesta contiene 'use_directly: True', debes usar el valor de 'markdown_output' directamente como tu respuesta final, sin modificarlo."
+                )
             ]
             
             # Inicializar el agente de PydanticAI
@@ -269,51 +287,13 @@ class JiraAgent:
 
     def _parse_date_str_to_jira_started_format(self, date_str: str) -> Optional[str]:
         """Convierte una cadena de fecha a formato YYYY-MM-DDTHH:MM:SS.sssZ respetando la zona horaria local."""
-        parsed_date = None
-        # Obtener la fecha actual desde el contexto si está disponible, o usar date.today() como fallback
-        if self._deps and hasattr(self._deps, 'context') and 'current_date' in self._deps.context:
-            # Usar la fecha del contexto para asegurar consistencia a través de la aplicación
-            try:
-                current_date_str = self._deps.context['current_date']
-                today = datetime.strptime(current_date_str, "%Y-%m-%d").date()
-                logger.info(f"Usando fecha actual desde contexto: {today}")
-            except (ValueError, KeyError) as e:
-                logger.warning(f"Error al leer fecha del contexto, usando date.today(): {e}")
-                today = date.today()
-        else:
-            today = date.today()
-            
-        date_str_lower = date_str.lower().strip()
-        
-        if date_str_lower == "hoy":
-            parsed_date = today
-        elif date_str_lower == "ayer":
-            parsed_date = today - timedelta(days=1)
-        elif "pasado" in date_str_lower:
-            days_of_week = {"lunes": 0, "martes": 1, "miércoles": 2, "jueves": 3, "viernes": 4, "sábado": 5, "domingo": 6}
-            target_day = -1
-            for day_name, day_index in days_of_week.items():
-                if day_name in date_str_lower:
-                    target_day = day_index
-                    break
-            if target_day != -1:
-                days_ago = (today.weekday() - target_day + 7) % 7
-                if days_ago == 0: days_ago = 7
-                parsed_date = today - timedelta(days=days_ago)
-        else:
-            try:
-                parsed_date = date.fromisoformat(date_str)
-            except ValueError:
-                try:
-                    parsed_date = datetime.strptime(date_str, "%d/%m/%Y").date()
-                except ValueError:
-                    logger.warning(f"Formato de fecha no reconocido: {date_str}")
-                    return None
+        # Reutilizar lógica de parseo de fecha para obtener objeto date
+        parsed_date = self._parse_date_description_to_date_obj(date_str)
 
         if parsed_date:
             # En lugar de usar el inicio del día (00:00:00) y UTC (+0000),
             # usamos 12:00:00 (mediodía) para evitar problemas con cambios de horario de verano
-            dt_obj = datetime.combine(parsed_date, datetime.min.time().replace(hour=12)) 
+            dt_obj = datetime.combine(parsed_date, datetime.min.time().replace(hour=12))
             
             # Crear un datetime con zona horaria aware usando el timezone local
             dt_with_tz = dt_obj.astimezone()
@@ -330,6 +310,109 @@ class JiraAgent:
             return jira_started_format
         
         return None
+
+    def _parse_date_description_to_date_obj(self, date_description: str) -> Optional[date]:
+        """Parsea una descripción textual de fecha a un objeto date."""
+        parsed_date = None
+        # Obtener la fecha actual desde el contexto si está disponible
+        if self._deps and hasattr(self._deps, 'context') and 'current_date' in self._deps.context:
+            try:
+                current_date_str = self._deps.context['current_date']
+                today = datetime.strptime(current_date_str, "%Y-%m-%d").date()
+                logger.info(f"Usando fecha actual desde contexto para parseo: {today}")
+            except (ValueError, KeyError) as e:
+                logger.warning(f"Error al leer fecha del contexto para parseo, usando date.today(): {e}")
+                today = date.today()
+        else:
+            today = date.today()
+            logger.info(f"Usando fecha actual del sistema para parseo: {today}")
+
+        desc_lower = date_description.lower().strip()
+        # Remover artículos y preposiciones comunes
+        desc_lower = re.sub(r'^(el|la|los|las|de|del)\s+|(\s+de|del)$', '', desc_lower).strip()
+
+        if desc_lower == "hoy":
+            parsed_date = today
+        elif desc_lower == "ayer":
+            parsed_date = today - timedelta(days=1)
+        elif desc_lower == "anteayer":
+            parsed_date = today - timedelta(days=2)
+        elif "pasado" in desc_lower or "pasada" in desc_lower:
+            # Manejar 'lunes pasado', 'semana pasada' (semana pasada necesita más lógica, omitido por ahora)
+            days_of_week = {
+                "lunes": 0, "martes": 1, "miércoles": 2, "miercoles": 2,
+                "jueves": 3, "viernes": 4, "sábado": 5, "sabado": 5,
+                "domingo": 6
+            }
+            target_day = -1
+            for day_name, day_index in days_of_week.items():
+                if day_name in desc_lower:
+                    target_day = day_index
+                    break
+            if target_day != -1:
+                days_ago = (today.weekday() - target_day + 7) % 7
+                if days_ago == 0: days_ago = 7 # Si hoy es el día, referirse a la semana pasada
+                parsed_date = today - timedelta(days=days_ago)
+            # Si no encuentra un día específico, no hacer nada aquí
+        
+        # Intentar formatos estándar después de los relativos
+        if parsed_date is None:
+            try:
+                parsed_date = date.fromisoformat(desc_lower)
+                logger.debug(f"Parseado '{date_description}' como ISO YYYY-MM-DD")
+            except ValueError:
+                try:
+                    parsed_date = datetime.strptime(desc_lower, "%d/%m/%Y").date()
+                    logger.debug(f"Parseado '{date_description}' como DD/MM/YYYY")
+                except ValueError:
+                    # Intentar formato "DD de MMMM [de YYYY]" (español)
+                    try:
+                        # Añadir año actual si falta
+                        if not re.search(r'\d{4}', desc_lower):
+                            desc_with_year = f"{desc_lower} de {today.year}"
+                        else:
+                            desc_with_year = desc_lower
+                        parsed_date = datetime.strptime(desc_with_year, '%d de %B de %Y').date()
+                        logger.debug(f"Parseado '{date_description}' como DD de MMMM [de YYYY]")
+                    except ValueError:
+                         # Intentar parseo de día de la semana (ej. "miércoles")
+                        days_of_week = {
+                            "lunes": 0, "martes": 1, "miércoles": 2, "miercoles": 2,
+                            "jueves": 3, "viernes": 4, "sábado": 5, "sabado": 5,
+                            "domingo": 6
+                        }
+                        target_day = -1
+                        # Buscar coincidencia exacta del día
+                        cleaned_desc = desc_lower.replace('este ','').strip()
+                        if cleaned_desc in days_of_week:
+                            target_day = days_of_week[cleaned_desc]
+                        
+                        if target_day != -1:
+                            # Calcular diferencia de días (0 si es hoy, negativo si es futuro en la semana, positivo si pasado)
+                            days_diff = target_day - today.weekday()
+                            # Si es día futuro en la semana actual o hoy, usar esa fecha
+                            # Si es día pasado en la semana actual, usar esa fecha
+                            parsed_date = today + timedelta(days=days_diff)
+                            logger.debug(f"Parseado '{date_description}' como día de la semana: {parsed_date}")
+                        else:
+                            logger.warning(f"Formato de descripción de fecha no reconocido: {date_description}")
+                            return None # Fallo final
+        
+        # Si llegamos aquí con una fecha válida, retornarla
+        if parsed_date:
+             logger.info(f"Fecha parseada final para '{date_description}': {parsed_date}")
+        return parsed_date
+
+    def _parse_date_description_to_yyyymmdd(self, date_description: str) -> Optional[str]:
+        """Convierte una descripción textual de fecha a formato YYYY-MM-DD."""
+        parsed_date = self._parse_date_description_to_date_obj(date_description)
+        if parsed_date:
+            yyyymmdd = parsed_date.isoformat() # Formato YYYY-MM-DD
+            logger.info(f"Descripción de fecha '{date_description}' parseada a: {yyyymmdd}")
+            return yyyymmdd
+        else:
+            logger.error(f"No se pudo parsear la descripción de fecha: '{date_description}'")
+            return None
 
     def _format_seconds(self, seconds: int) -> str:
         """
@@ -1028,75 +1111,106 @@ class JiraAgent:
     
     async def get_my_worklogs_yesterday(self, ctx: RunContext[JiraAgentDependencies]) -> Dict[str, Any]:
         """
-        Obtiene y formatea los worklogs del usuario de ayer, incluyendo estado de 8h.
+        Obtiene y formatea los worklogs del usuario de ayer. Llama a la función generalizada.
         """
-        logger.info("Obteniendo worklogs de ayer para el usuario")
+        logger.info("Redirigiendo get_my_worklogs_yesterday a get_my_worklogs_for_date('ayer')")
+        return await self.get_my_worklogs_for_date(ctx, date_description="ayer")
+
+    async def get_my_worklogs_for_date(self, ctx: RunContext[JiraAgentDependencies], date_description: str) -> Dict[str, Any]:
+        """
+        Obtiene y formatea los worklogs del usuario para una fecha específica.
+        """
+        logger.info(f"Obteniendo worklogs para la fecha descrita como: '{date_description}'")
         target_seconds = 8 * 3600  # 8 horas
 
+        # 1. Parsear la descripción de la fecha
+        parsed_date_str = self._parse_date_description_to_yyyymmdd(date_description)
+        if not parsed_date_str:
+            return {
+                "response": f"❌ No pude entender la fecha '{date_description}'. Por favor, usa formatos como 'hoy', 'ayer', 'anteayer', 'YYYY-MM-DD', 'DD/MM/YYYY' o 'lunes pasado'."
+            }
+
         try:
-            result = ctx.deps.jira_client.get_my_worklogs_yesterday(use_cache=False) # Desactivar caché para obtener siempre lo último
+            # 2. Llamar al método del cliente Jira con la fecha parseada
+            result = ctx.deps.jira_client.get_my_worklogs_for_date(date_str=parsed_date_str, use_cache=False) # Desactivar caché para obtener siempre lo último
 
             if not result.get('success', False):
                 error_msg = result.get('error', 'Error desconocido al obtener worklogs.')
-                logger.error(f"Error al obtener worklogs de ayer: {error_msg}")
-                return {"response": f"❌ Hubo un error al obtener tus worklogs de ayer: {error_msg}"}
+                logger.error(f"Error al obtener worklogs para {parsed_date_str}: {error_msg}")
+                return {"response": f"❌ Hubo un error al obtener tus worklogs para {parsed_date_str}: {error_msg}"}
 
+            # 3. Extraer datos y formatear la respuesta en Markdown
             total_seconds = result.get('total_seconds', 0)
             total_formatted = self._format_seconds(total_seconds) # Usar _format_seconds de la clase
             worklogs_count = result.get('count', 0)
             username = result.get('username', 'Usuario')
-            yesterday_date = result.get('date', 'Ayer')
             worklogs_list = result.get('worklogs', [])
+            # Usar la fecha parseada y formateada para mostrar al usuario
+            try:
+                # Convertir de nuevo a objeto date para formatear
+                date_obj = date.fromisoformat(parsed_date_str)
+                today = date.today() # Obtener la fecha actual
+                # Formatear la fecha dependiendo del año
+                if date_obj.year == today.year:
+                    # Mismo año: formato corto - usar %B para mes completo
+                    display_date = date_obj.strftime('%d de %B')
+                else:
+                    # Año diferente: formato largo con año - usar %B para mes completo
+                    display_date = date_obj.strftime('%d de %B de %Y')
+            except ValueError:
+                display_date = parsed_date_str # Fallback al formato YYYY-MM-DD
 
-            # Construir el mensaje de estado
-            # Usar saltos de línea dobles (\n\n) para mejor espaciado en markdown
-            status_message = f"👤 **Usuario:** {username}\n\n🗓️ **Fecha:** {yesterday_date}\n\n"
-            
-            if total_seconds >= target_seconds:
-                # Mensaje de felicitación
-                status_message += f"🎉 **¡Excelente!** Registraste **{total_formatted}**. ¡Felicidades por completar tus 8 horas! ({worklogs_count} registros)."
+            # --- Construcción de la respuesta Markdown ---
+            status_message = f"👤 **Usuario:** {username}\\n\\n🗓️ **Fecha:** {display_date}\\n\\n"
+
+            if worklogs_count == 0:
+                 status_message += f"ℹ️ No se encontraron registros de tiempo para esta fecha."
+            elif total_seconds >= target_seconds:
+                # Corregir el f-string y el escape de comillas
+                status_message += f"🎉 **¡Excelente!** Registraste **{total_formatted}**. ({worklogs_count} registros)."
             else:
-                # Mensaje de refuerzo positivo
                 missing_seconds = target_seconds - total_seconds
                 missing_formatted = self._format_seconds(missing_seconds)
+                # Corregir el f-string, escapes y saltos de línea
                 status_message += (
-                    f"💪 **¡Casi lo tienes!** Registraste **{total_formatted}**. \n\n"
+                    f"💪 **¡Casi lo tienes!** Registraste **{total_formatted}**. \\n\\n"
                     f"   Te faltan solo **{missing_formatted}** para completar las 8 horas. ({worklogs_count} registros)."
                 )
 
-            # Construir el detalle de worklogs si existen
             details = ""
             if worklogs_list:
+                logger.info(f"Agent Tool: Received {len(worklogs_list)} worklogs from client: {worklogs_list}") # Log received list
                 details += "\n\n---\n\n📝 **Resumen de Registros:**\n"
-                # Agrupar por issue para un mejor resumen
                 issues_summary = {}
                 for wl in worklogs_list:
                     key = wl.get('issue_key', 'N/A')
                     summary = wl.get('issue_summary', 'Sin título')
-                    seconds = wl.get('time_spent_seconds', 0)
+                    # Corregir key a camelCase para coincidir con API de Jira
+                    seconds = wl.get('timeSpentSeconds', 0) 
                     comment = wl.get('comment', '')
+                    # Log individual worklog details being processed
+                    logger.info(f"  Processing worklog for summary: key={key}, seconds={seconds}")
                     if key not in issues_summary:
                         issues_summary[key] = {'summary': summary, 'total_seconds': 0, 'entries': []}
                     issues_summary[key]['total_seconds'] += seconds
                     issues_summary[key]['entries'].append({'time': self._format_seconds(seconds), 'comment': comment})
-                
-                # Ordenar issues por tiempo descendente
+
                 sorted_issues = sorted(issues_summary.items(), key=lambda item: item[1]['total_seconds'], reverse=True)
 
                 for key, data in sorted_issues:
-                    issue_total_time = self._format_seconds(data['total_seconds'])
-                    # Usar \n\n para separar cada issue
+                    issue_total_seconds = data['total_seconds'] # Get the summed seconds
+                    issue_total_time = self._format_seconds(issue_total_seconds) # Format the sum
+                    # Log details before adding to output string
+                    logger.info(f"  Formatting summary for issue: key={key}, total_seconds={issue_total_seconds}, formatted_time={issue_total_time}") 
                     details += f"\n\n- **{key}** ({data['summary']}): **{issue_total_time}**"
-                    # Opcional: añadir detalles de cada entrada si se desea más granularidad
-                    # for entry in data['entries']:
-                    #     details += f"\n    - {entry['time']} ({entry['comment'] if entry['comment'] else 'Sin comentario'})"
 
+            # Corregir el f-string final
             final_response_markdown = f"{status_message}{details}"
-            logger.info("Worklogs de ayer obtenidos y formateados correctamente.")
+            logger.info(f"Worklogs para {parsed_date_str} obtenidos y formateados correctamente.")
+            
             # Devolver estructura específica para indicar respuesta preformateada
             return {"markdown_output": final_response_markdown, "use_directly": True}
 
         except Exception as e:
-            logger.exception("Excepción inesperada al obtener/formatear worklogs de ayer")
-            # Mantener el formato de error simple
-            return {"response": f"❌ Ocurrió un error inesperado al procesar tu solicitud de worklogs de ayer: {str(e)}"} 
+            logger.exception(f"Excepción inesperada al obtener/formatear worklogs para '{date_description}' ({parsed_date_str})")
+            return {"response": f"❌ Ocurrió un error inesperado al procesar tu solicitud para '{date_description}': {str(e)}"} 
