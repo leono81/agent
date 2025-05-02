@@ -1091,104 +1091,42 @@ class JiraClient:
                 logger.info(f"Procesando issue candidata: {issue_key} - {issue_summary}")
                 processed_issues_keys.add(issue_key)
                 
-                # Variables para paginación de worklogs de esta issue
-                start_at = 0
-                max_results = 100 # Tamaño de página razonable
-                total_worklogs_for_issue = 0
-                processed_count = 0
-                issue_worklogs_found_count = 0
-                
-                worklogs_endpoint = f"/rest/api/3/issue/{issue_key}/worklog"
+                # Obtener SOLO los worklogs relevantes para esta issue, usuario y fecha
+                try:
+                    # Llamar a la función que usa JQL específico
+                    issue_specific_worklogs = self.get_issue_worklogs_for_date(issue_key, yesterday, current_account_id)
+                    
+                    # Procesar los worklogs devueltos
+                    for worklog in issue_specific_worklogs:
+                        time_spent_seconds = worklog.get('timeSpentSeconds', 0)
+                        time_spent = worklog.get('timeSpent', '') # Formateado por Jira
+                        comment = worklog.get('comment', 'Sin comentario')
+                        started = worklog.get('started', '')
+                        author_data = worklog.get('author', {})
+                        author_display_name = author_data.get('displayName', current_display_name)
+                        worklog_id = worklog.get('id')
 
-                while True: # Bucle de paginación para worklogs de la issue actual
-                    params = {'startAt': start_at, 'maxResults': max_results}
-                    logger.debug(f"  Obteniendo página de worklogs para {issue_key}: startAt={start_at}, maxResults={max_results}")
+                        logger.info(f"      [MATCH] Worklog encontrado via JQL: Issue={issue_key}, Tiempo={time_spent}, Fecha={started}")
 
-                    try:
-                        # Usamos el método 'get' de la librería para llamar al endpoint específico
-                        response_data = self.jira.get(worklogs_endpoint, params=params)
+                        filtered_worklogs.append({
+                            "issue_key": issue_key,
+                            "issue_summary": issue_summary,
+                            "issue_url": self.get_issue_url(issue_key),
+                            "started": started,
+                            "time_spent_seconds": time_spent_seconds,
+                            "time_spent": time_spent,
+                            "comment": comment,
+                            "author": author_display_name,
+                            "worklog_id": worklog_id
+                        })
+                        total_seconds += time_spent_seconds
+                        
+                    logger.info(f"  Terminado procesamiento de {issue_key}. Encontrados {len(issue_specific_worklogs)} worklogs coincidentes.")
 
-                        if not isinstance(response_data, dict):
-                             logger.warning(f"  Respuesta inesperada para worklogs de {issue_key} (no es dict): {response_data}")
-                             break # Salir de paginación para esta issue
-
-                        worklogs_page = response_data.get('worklogs', [])
-                        current_page_size = len(worklogs_page)
-                        total_worklogs_for_issue = response_data.get('total', 0) # Total real de worklogs para esta issue
-                        processed_count += current_page_size
-
-                        if not worklogs_page:
-                            logger.debug(f"  Página vacía encontrada para {issue_key} en startAt={start_at}. Terminando paginación.")
-                            break
-
-                        logger.debug(f"    Recibidos {current_page_size} worklogs en esta página (Total Issue: {total_worklogs_for_issue}). Procesados hasta ahora: {processed_count}")
-
-                        # 4. Filtrar worklogs en la página actual
-                        for worklog in worklogs_page:
-                            # Verificar autor por accountId
-                            author = worklog.get('author', {})
-                            author_account_id = author.get('accountId')
-                            if author_account_id != current_account_id:
-                                continue # No es del usuario actual
-
-                            # Verificar fecha
-                            started = worklog.get('started', '')
-                            worklog_date_str = ''
-                            try:
-                                if started:
-                                     # *** CAMBIO PRINCIPAL AQUÍ: Usar strptime ***
-                                     # Usar strptime con el formato específico incluyendo el offset %z
-                                     # %z maneja offsets como -0300, +0500, etc.
-                                     worklog_dt = datetime.strptime(started, '%Y-%m-%dT%H:%M:%S.%f%z')
-
-                                     # Comparar solo la parte de la fecha (asumiendo que 'yesterday' es string YYYY-MM-DD)
-                                     worklog_date_str = worklog_dt.date().isoformat() # Convertir a string YYYY-MM-DD
-
-                            except ValueError as date_e:
-                                # Loguear la cadena que falló y el error específico
-                                logger.warning(f"      [WARN] Error parseando fecha del worklog ID {worklog.get('id')} ('{started}') con strptime: {date_e}")
-                                continue # Saltar si no se puede parsear la fecha
-                            except Exception as date_e: # Captura general por si acaso
-                                logger.error(f"      [ERROR] Error inesperado parseando fecha del worklog ID {worklog.get('id')} ('{started}'): {date_e}")
-                                continue
-
-                            if worklog_date_str == yesterday:
-                                # ¡Coincidencia! Añadir al resultado
-                                time_spent_seconds = worklog.get('timeSpentSeconds', 0)
-                                time_spent = worklog.get('timeSpent', '')
-                                comment = worklog.get('comment', 'Sin comentario')
-                                author_display_name = author.get('displayName', current_display_name) # Usar el display name del worklog si está
-
-                                logger.info(f"      [MATCH] Worklog encontrado: Issue={issue_key}, Tiempo={time_spent}, Fecha={started}")
-
-                                filtered_worklogs.append({
-                                    "issue_key": issue_key,
-                                    "issue_summary": issue_summary,
-                                    "issue_url": self.get_issue_url(issue_key),
-                                    "started": started,
-                                    "time_spent_seconds": time_spent_seconds,
-                                    "time_spent": time_spent,
-                                    "comment": comment,
-                                    "author": author_display_name,
-                                    "worklog_id": worklog.get('id')
-                                })
-                                total_seconds += time_spent_seconds
-                                issue_worklogs_found_count += 1
-
-                        # 5. Decidir si continuar paginando
-                        if processed_count >= total_worklogs_for_issue:
-                            logger.debug(f"  Paginación completada para {issue_key}. Procesados: {processed_count}/{total_worklogs_for_issue}")
-                            break
-                        else:
-                            start_at += current_page_size # Preparar para la siguiente página
-
-                    except Exception as page_e:
-                        logger.error(f"  Error obteniendo/procesando página de worklogs para {issue_key} en startAt={start_at}: {page_e}")
-                        # Considerar si reintentar o abortar para esta issue
-                        break # Abortar paginación para esta issue en caso de error grave
-
-                logger.info(f"  Terminado procesamiento de {issue_key}. Encontrados {issue_worklogs_found_count} worklogs coincidentes de {total_worklogs_for_issue} totales.")
-
+                except Exception as specific_e:
+                    logger.error(f"  Error obteniendo worklogs específicos para {issue_key} en fecha {yesterday}: {specific_e}")
+                    # Considerar si continuar con la siguiente issue o devolver error
+                    continue # Continuar con la siguiente issue por ahora
 
             # 6. Formatear resultado final
             total_formatted = self._format_seconds(total_seconds) if total_seconds > 0 else "00:00:00"

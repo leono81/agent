@@ -81,7 +81,7 @@ with st.sidebar:
     st.markdown("- Agregar 2h de trabajo a PSIMDESASW-111")
     st.markdown("- ¿Cuál es el estado de PSIMDESASW-222?")
     st.markdown("- Cambiar el estado de mi historia PSIMDESASW-333")
-    st.markdown("- ¿Cumplí con mis horas de ayer?")
+    #st.markdown("- ¿Cumplí con mis horas de ayer?")
     
     st.markdown("---")
     

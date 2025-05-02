@@ -66,7 +66,6 @@ except (ValueError, AttributeError):
 # Título de la aplicación
 st.set_page_config(
     page_title="Asistente Atlassian",
-    page_icon="🤖",
     layout="wide"
 )
 
@@ -91,30 +90,9 @@ if "agent" not in st.session_state:
 
 # Sidebar con información
 with st.sidebar:
-    st.title("Asistente Atlassian 🤖")
-    st.markdown("### Asistente inteligente para Jira y Confluence")
+    st.title("Asistente Atlassian")
     
-    # Tabs para ejemplos de Jira y Confluence
-    jira_tab, confluence_tab = st.tabs(["Ejemplos Jira", "Ejemplos Confluence"])
-    
-    with jira_tab:
-        st.markdown("#### Ejemplos para Jira:")
-        st.markdown("- ¿Qué historias tengo asignadas?")
-        st.markdown("- Agregar 2h de trabajo a PSIMDESASW-111")
-        st.markdown("- ¿Cuál es el estado de PSIMDESASW-222?")
-        st.markdown("- Cambiar el estado de mi historia PSIMDESASW-333")
-        st.markdown("- ¿Cumplí con mis horas de ayer?")
-    
-    with confluence_tab:
-        st.markdown("#### Ejemplos para Confluence:")
-        st.markdown("- Buscar páginas sobre microservicios")
-        st.markdown("- ¿Qué documentación tenemos sobre AWS?")
-        st.markdown("- Muestra la documentación del proyecto XYZ")
-        st.markdown("- ¿Dónde encuentro información sobre el proceso de deploy?")
-        st.markdown("- Crear una página nueva sobre arquitectura")
-    
-    st.markdown("---")
-    
+        
     # Utilizar el formato de fecha manual para mayor consistencia
     now = datetime.now()
     month_names = {
@@ -136,7 +114,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.messages.append({
             "role": "assistant", 
-            "content": "¡Hola! Soy tu asistente para Jira y Confluence. ¿En qué puedo ayudarte hoy?"
+            "content": "¡Hola! Soy tu asistente. ¿En qué puedo ayudarte hoy?"
         })
         # También reiniciar el contexto del orquestador
         if "agent" in st.session_state:
@@ -147,8 +125,7 @@ with st.sidebar:
         st.rerun()
 
 # Título principal
-st.title("Asistente Atlassian 🤖")
-st.markdown("Pregúntame sobre tus issues de Jira o tu documentación en Confluence. Puedo ayudarte con ambas plataformas.")
+st.title("Asistente Atlassian")
 
 # Mostrar mensajes
 for message in st.session_state.messages:
