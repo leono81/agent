@@ -7,6 +7,14 @@ import locale
 from datetime import datetime
 from dotenv import load_dotenv
 
+# --- Debug Prints ---
+# print(f"DEBUG: sys.executable = {sys.executable}")
+# print("DEBUG: sys.path = [")
+# for p in sys.path:
+#     print(f"  '{p}',")
+# print("]")
+# --- End Debug Prints ---
+
 # Configurar locale para fechas en español
 try:
     locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')

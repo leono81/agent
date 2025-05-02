@@ -66,14 +66,21 @@ def main():
         print("Puedes usar env.example como referencia.")
         return
     
-    # Ejecutar la aplicación Streamlit con el orquestador
-    print("Iniciando el Asistente Atlassian con orquestador...")
+    # Ejecutar la aplicación Streamlit usando el script wrapper y el venv
+    print("Iniciando el Asistente Atlassian via wrapper...")
     
     try:
         # Usar Popen en lugar de run para tener más control sobre el proceso
         global streamlit_process
+        # --- MODIFICADO ---: Ejecutar run_app.py con el python del venv
+        python_executable = "venv/bin/python"
+        if not os.path.exists(python_executable):
+            print(f"Error: No se encuentra el ejecutable de Python en {python_executable}")
+            print("Asegúrate de que el entorno virtual 'venv' existe y está configurado.")
+            return
+            
         streamlit_process = subprocess.Popen(
-            ["streamlit", "run", "orchestrator_app.py"],
+            [python_executable, "run_app.py"],
             # Redirigir la salida estándar y de error al proceso principal
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

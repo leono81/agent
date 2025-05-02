@@ -5,13 +5,14 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 import re  # Importar regex para parsing
 import locale # Importar locale
+import torch
 
 from pydantic_ai import Agent, RunContext, Tool
 from pydantic import BaseModel, Field
 
 # --- RAG Imports ---
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document # To format retrieved docs
 # --- End RAG Imports ---
 
@@ -123,12 +124,17 @@ class JiraAgent:
             self.retriever = None
             try:
                 logfire.info("Inicializando sistema RAG...")
-                embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
-                # Cargar el vector store persistente
+                # Use HuggingFaceEmbeddings (recommended replacement)
+                embeddings = HuggingFaceEmbeddings(
+                    model_name=EMBEDDING_MODEL,
+                    model_kwargs={'device': 'cuda' if torch.cuda.is_available() else 'cpu'}, # Optional: specify device
+                    encode_kwargs={'normalize_embeddings': True} # Optional: normalize embeddings
+                )
+                # Cargar el vector store persistente usando la clase actualizada de langchain_chroma
                 vector_store = Chroma(persist_directory=VECTOR_STORE_DIR, embedding_function=embeddings)
                 self.retriever = vector_store.as_retriever(
                     search_type="similarity",
-                    search_kwargs={"k": 3} # Obtener los 3 chunks más relevantes
+                    search_kwargs={"k": 3}
                 )
                 logfire.info("Sistema RAG inicializado y retriever creado.")
             except Exception as rag_e:

@@ -10,4 +10,7 @@ langchain>=0.1.0 # Using a recent version for better compatibility
 langchain-openai>=0.1.0 # Separate package for OpenAI integrations
 langchain-community>=0.0.20 # Explicitly add community package for loaders/vectorstores
 chromadb>=0.4.0 # Vector store
-sentence-transformers>=2.2.0 # Local embeddings 
+sentence-transformers>=2.2.0 # Local embeddings
+# Updated RAG packages for deprecation warnings
+langchain-chroma>=0.1.0 # Replacement for community Chroma
+langchain-huggingface>=0.0.3 # Replacement for community HF Embeddings 
