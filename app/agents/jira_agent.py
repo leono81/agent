@@ -9,6 +9,12 @@ import locale # Importar locale
 from pydantic_ai import Agent, RunContext, Tool
 from pydantic import BaseModel, Field
 
+# --- RAG Imports ---
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain_core.documents import Document # To format retrieved docs
+# --- End RAG Imports ---
+
 from app.utils.jira_client import JiraClient
 from app.utils.logger import get_logger
 from app.agents.models import Issue, Worklog, Transition, AgentResponse
@@ -84,18 +90,24 @@ os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 # Por ahora, la definimos aquí para evitar dependencias circulares
 AGENT_CANNOT_HANDLE_SIGNAL = "$AGENT_CANNOT_HANDLE"
 
+# --- RAG Config ---
+VECTOR_STORE_DIR = "vector_store_db"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+# --- End RAG Config ---
+
 @dataclass
 class JiraAgentDependencies:
     """Dependencias para el agente de Jira."""
     jira_client: JiraClient
     context: Dict[str, Any]  # Contexto para almacenar información entre interacciones
     agent_instance: 'JiraAgent'
+    retriever: Optional[Any] = None # Using Any for now to avoid Langchain type complexity here
 
 class JiraAgent:
-    """Agente para interactuar con Jira de forma conversacional."""
+    """Agente para interactuar con Jira de forma conversacional, aumentado con RAG."""
     
     def __init__(self):
-        """Inicializa el agente de Jira."""
+        """Inicializa el agente de Jira y el sistema RAG."""
         try:
             # Iniciar cliente Jira
             jira_client = JiraClient()
@@ -107,11 +119,30 @@ class JiraAgent:
                 "current_issue": None
             }
             
-            # Crear dependencias para el agente
+            # --- RAG Initialization ---
+            self.retriever = None
+            try:
+                logfire.info("Inicializando sistema RAG...")
+                embeddings = SentenceTransformerEmbeddings(model_name=EMBEDDING_MODEL)
+                # Cargar el vector store persistente
+                vector_store = Chroma(persist_directory=VECTOR_STORE_DIR, embedding_function=embeddings)
+                self.retriever = vector_store.as_retriever(
+                    search_type="similarity",
+                    search_kwargs={"k": 3} # Obtener los 3 chunks más relevantes
+                )
+                logfire.info("Sistema RAG inicializado y retriever creado.")
+            except Exception as rag_e:
+                logfire.error(f"Error al inicializar RAG: {rag_e}", exc_info=True)
+                logger.error(f"Error al inicializar RAG: {rag_e}. El agente funcionará sin RAG.")
+                # El agente continuará sin RAG si falla la inicialización
+            # --- End RAG Initialization ---
+
+            # Crear dependencias para el agente, incluyendo el retriever
             self._deps = JiraAgentDependencies(
                 jira_client=jira_client,
                 context=context,
-                agent_instance=self
+                agent_instance=self,
+                retriever=self.retriever # Pass the retriever instance
             )
             
             # Preparar las herramientas para el agente
@@ -230,14 +261,20 @@ class JiraAgent:
                     "- Si necesitas añadir comentarios, debes usar issue_add_comment como método separado, ya que issue_worklog no procesa comentarios. "
                     "- La herramienta add_worklog ya maneja esta lógica internamente, pero recuerda estos detalles si necesitas resolver problemas. "
                     "- Para cualquier error relacionado con la API, consulta la documentación de la biblioteca 'atlassian-python-api'."
+                    "\n\n"
+                    "CONOCIMIENTO ADICIONAL (RAG):\n"
+                    "Antes de responder, se te puede proporcionar contexto adicional recuperado de una base de conocimientos local. "
+                    "Usa esta información para dar respuestas más precisas y específicas sobre proyectos, acrónimos o procedimientos internos mencionados. "
+                    "Si el contexto recuperado contradice tu conocimiento general, prioriza el contexto recuperado ya que es específico de este entorno. "
+                    "Si no se proporciona contexto adicional o no es relevante, responde basándote en tu conocimiento general y las herramientas."
                 ),
                 instrument=use_logfire  # Habilitar instrumentación para monitoreo con logfire solo si está disponible
             )
             
-            logger.info("Agente de Jira inicializado correctamente")
+            logger.info("Agente de Jira inicializado correctamente (con RAG si está disponible).")
             
         except Exception as e:
-            logger.error(f"Error al inicializar el agente de Jira: {e}")
+            logger.error(f"Error fatal al inicializar el agente de Jira: {e}", exc_info=True)
             raise
     
     def _parse_time_str_to_seconds(self, time_str: str) -> Optional[int]:
@@ -487,10 +524,9 @@ class JiraAgent:
         metadata: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        Procesa un mensaje del usuario de forma síncrona, aceptando historial y metadatos.
-        Incluye un ejemplo para devolver AGENT_CANNOT_HANDLE_SIGNAL.
+        Procesa un mensaje, recupera contexto RAG relevante, y llama al agente LLM.
         """
-        logfire.info(f"JiraAgent procesando mensaje síncrono: {message}")
+        logfire.info(f"JiraAgent RAG procesando mensaje síncrono: {message}")
 
         # --- Ejemplo de Señal de Reflexión --- 
         # Si el mensaje indica explícitamente Confluence, devolvemos la señal
@@ -499,7 +535,31 @@ class JiraAgent:
             return AGENT_CANNOT_HANDLE_SIGNAL
         # --- Fin del Ejemplo ---
 
-        # Actualizar contexto interno si se proporciona desde el orquestador
+        # --- RAG Retrieval ---
+        rag_context = ""
+        retrieved_docs = []
+        if self.retriever:
+            try:
+                logfire.info(f"Realizando búsqueda RAG para: {message}")
+                retrieved_docs = self.retriever.invoke(message)
+                if retrieved_docs:
+                    logfire.info(f"Recuperados {len(retrieved_docs)} chunks de RAG.")
+                    # Formatear el contexto RAG para el LLM
+                    context_parts = [f"--- Fragmento {i+1} (Fuente: {doc.metadata.get('source', 'Desconocida')}) ---\n{doc.page_content}" 
+                                     for i, doc in enumerate(retrieved_docs)]
+                    rag_context = "\n\n### Contexto Adicional Relevante Recuperado:\n" + "\n\n".join(context_parts)
+                    logfire.debug(f"Contexto RAG formateado: {rag_context[:500]}...")
+                else:
+                    logfire.info("No se encontraron chunks relevantes en RAG.")
+            except Exception as rag_e:
+                logfire.error(f"Error durante la recuperación RAG: {rag_e}", exc_info=True)
+                # Continuar sin contexto RAG si la recuperación falla
+                rag_context = "\n\n(Advertencia: Ocurrió un error al intentar recuperar contexto adicional.)"
+        else:
+            logfire.warning("Retriever RAG no inicializado, omitiendo recuperación.")
+        # --- End RAG Retrieval ---
+
+        # Actualizar contexto interno (historial, metadatos)
         if conversation_history is not None:
             self._deps.context["conversation_history"] = conversation_history
         if metadata is not None:
@@ -511,12 +571,26 @@ class JiraAgent:
             if "weekday" in metadata:
                 self._deps.context["weekday"] = metadata["weekday"]
 
+        # --- Preparar la llamada al LLM con contexto RAG --- 
+        # Técnica simple: Añadir el contexto RAG como un mensaje "system" o "tool" al historial
+        # ANTES de pasar la consulta real del usuario.
+        # Nota: PydanticAI `Agent` no soporta pasar historial directamente a `run_sync` de forma sencilla.
+        # Una alternativa más robusta sería usar directamente LangChain chains (LCEL) o modificar
+        # cómo PydanticAI maneja el historial/prompt.
+        # Por ahora, inyectaremos el contexto en el mensaje si existe.
+        
+        final_message_to_llm = message
+        if rag_context:
+            # Prepend the RAG context to the user message for the LLM to see
+            # This is a simplification; more complex prompt engineering might be better.
+            final_message_to_llm = f"{rag_context}\n\n### Consulta del Usuario:\n{message}"
+            logfire.info("Mensaje final al LLM incluye contexto RAG.")
+
         try:
-            # Usar el agente interno de PydanticAI para procesar el mensaje
-            # Asegurarse de pasar las dependencias correctas
-            result = self.agent.run_sync(message, deps=self._deps)
+            # Llamar al agente LLM con el mensaje (posiblemente aumentado)
+            result = self.agent.run_sync(final_message_to_llm, deps=self._deps)
             response = result.data
-            logfire.info(f"JiraAgent respuesta generada: {response[:100]}...")
+            logfire.info(f"JiraAgent RAG respuesta generada: {response[:100]}...")
             return response
         except Exception as e:
             logger.error(f"Error en JiraAgent.process_message_sync: {e}", exc_info=True)

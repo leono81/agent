@@ -49,4 +49,7 @@ Thumbs.db
 
 # Cachés y archivos temporales de Streamlit
 .streamlit/
-__pycache__/ 
+__pycache__/
+
+# RAG Vector Store DB (Local)
+vector_store_db/ 
