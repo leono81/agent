@@ -4,6 +4,8 @@ from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
+import argparse
+from app.utils.indexing import update_vector_store
 
 # Configuración
 KNOWLEDGE_BASE_DIR = "knowledge_base"
@@ -83,4 +85,10 @@ def main():
         print(f"Error fatal durante la indexación: {e}")
 
 if __name__ == "__main__":
-    main() 
+    parser = argparse.ArgumentParser(description='Actualiza el índice vectorial de ChromaDB desde el script.')
+    parser.add_argument('--force', action='store_true', help='Forzar la reindexación aunque no se detecten cambios.')
+    args = parser.parse_args()
+
+    print("Iniciando indexación manual...")
+    update_vector_store(force_reindex=args.force)
+    print("Proceso de indexación manual finalizado.") 

@@ -6,6 +6,14 @@ import signal
 import locale
 from datetime import datetime
 from dotenv import load_dotenv
+import logfire
+
+# --- Configuración de Página (Debe ser el primer comando de Streamlit) ---
+st.set_page_config(
+    page_title="Asistente Atlassian",
+    layout="wide"
+)
+# ------------------------------------------------------------------------
 
 # --- Debug Prints ---
 # print(f"DEBUG: sys.executable = {sys.executable}")
@@ -30,26 +38,64 @@ except locale.Error:
 # Cargar variables de entorno
 load_dotenv()
 
-# Agregar el directorio de la aplicación al path para importaciones relativas
+# Añadir el directorio raíz del proyecto al sys.path
+# Esto permite importaciones como 'from app.agents...' independientemente de cómo se ejecute
 current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
+project_root = os.path.abspath(os.path.join(current_dir, '..')) # Asume que orchestrator_app está en una subcarpeta (como 'app') o en la raíz
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-from app.agents import OrchestratorAgent
+# Importar OrchestratorAgent y SharedContext desde orchestrator_agent.py
+from app.agents.orchestrator_agent import OrchestratorAgent, SharedContext
+# from app.agents.models import SharedContext # <-- Corrección: Ya no se importa de models.py
+from app.utils.indexing import update_vector_store # <-- Importar la función de indexación
 from app.utils.logger import get_logger
 
 # Configurar logger
 logger = get_logger("orchestrator_app")
 
+# Configurar Logfire
+try:
+    logfire.configure()
+    logfire.info("Logfire configurado para orchestrator_app.")
+except Exception as e:
+    st.warning(f"No se pudo configurar Logfire: {e}") # ¡Ojo! Esto es un comando st.
+    logfire.info(f"Logfire no configurado: {e}") # Log localmente si falla
+
+# --- Indexación de la Base de Conocimientos (se ejecuta solo una vez por sesión de Streamlit) ---
+@st.cache_resource(show_spinner="Actualizando base de conocimientos si es necesario...")
+def run_initial_indexing():
+    """Ejecuta la indexación al inicio, cacheado por sesión."""
+    try:
+        update_vector_store() # Llama a la función que comprueba y actualiza si hay cambios
+        return True # Indicar éxito
+    except Exception as e:
+        # No usar st.error aquí directamente para evitar el problema de set_page_config
+        logger.error(f"Error en run_initial_indexing: {e}", exc_info=True)
+        # Devolver el error para mostrarlo después de set_page_config
+        return e
+
+indexing_result = run_initial_indexing()
+
+# --- Manejo de Errores de Indexación (Mostrar después de set_page_config) ---
+if isinstance(indexing_result, Exception):
+    st.error(f"Error durante la indexación inicial de la base de conocimientos: {indexing_result}")
+    # Opcionalmente, detener la app si la indexación es crítica
+    # st.stop()
+elif not indexing_result:
+     # Podría haber otros casos donde devuelva False o None si la lógica cambia
+     st.warning("La indexación inicial no se completó o fue omitida.")
+
 # Función para liberar recursos cuando se cierra la aplicación
 def cleanup_resources():
     logger.info("Limpiando recursos de la aplicación...")
     try:
-        if "agent" in st.session_state:
+        if 'orchestrator' in st.session_state:
             logger.info("Cerrando el orquestador...")
             # Si el agente tiene algún método de cierre, llamarlo aquí
-            agent = st.session_state.agent
+            agent = st.session_state.orchestrator
             # Algunas veces es útil enviar un mensaje de despedida
-            agent.process_message_sync("$__cleanup_signal__")
+            # agent.process_message_sync("$__cleanup_signal__") # Descomentar si es necesario
     except Exception as e:
         logger.error(f"Error al limpiar recursos: {e}")
     logger.info("Recursos limpiados correctamente")
@@ -71,36 +117,44 @@ except (ValueError, AttributeError):
     # Ignorar errores en entornos donde no se pueden configurar señales (ej. hilos)
     logger.warning("No se pudieron configurar los manejadores de señales")
 
-# Título de la aplicación
-st.set_page_config(
-    page_title="Asistente Atlassian",
-    layout="wide"
-)
 
-# Inicializar el estado de la sesión
+# Inicializar el estado de la sesión para mensajes
 if "messages" not in st.session_state:
     st.session_state.messages = []
-    # Mensaje de bienvenida
+    # Mensaje de bienvenida inicial
     st.session_state.messages.append({
         "role": "assistant", 
         "content": "¡Hola! Soy tu asistente para Jira y Confluence. ¿En qué puedo ayudarte hoy?"
     })
 
-if "agent" not in st.session_state:
+# --- Inicialización del Agente Orquestador ---
+# Usar st.session_state para mantener la instancia del agente entre recargas de la UI
+if 'orchestrator' not in st.session_state:
     try:
-        logger.info("Inicializando orquestador")
-        st.session_state.agent = OrchestratorAgent()
-        logger.info("Orquestador inicializado correctamente")
+        # Crear el contexto compartido primero (NO SE PASA AL CONSTRUCTOR)
+        # shared_context = SharedContext() # El agente lo crea internamente
+        st.session_state.orchestrator = OrchestratorAgent() # No pasar 'context'
+        logfire.info("Nueva instancia de OrchestratorAgent creada y guardada en session_state.")
+        # No reiniciar mensajes aquí si ya existe la clave 'messages'
+        if "messages" not in st.session_state or not st.session_state.messages:
+             st.session_state.messages = [] # Inicializar historial de chat si es necesario
+             st.session_state.messages.append({ # Añadir bienvenida si se reinicia
+                 "role": "assistant",
+                 "content": "¡Hola! Bienvenido de nuevo."
+             })
+        st.info("Agente Orquestador inicializado.") # Mensaje para el usuario
     except Exception as e:
-        logger.error(f"Error al inicializar el orquestador: {e}")
-        st.error(f"Error al inicializar el asistente: {str(e)}")
-        st.stop()
+        logger.error(f"Error CRÍTICO al inicializar el orquestador: {e}", exc_info=True)
+        st.error(f"Error CRÍTICO al inicializar el asistente: {e}. La aplicación no puede continuar.")
+        st.stop() # Detener la app si el agente no se puede crear
+
+orchestrator: OrchestratorAgent = st.session_state.orchestrator
+
 
 # Sidebar con información
 with st.sidebar:
     st.title("Asistente Atlassian")
     
-        
     # Utilizar el formato de fecha manual para mayor consistencia
     now = datetime.now()
     month_names = {
@@ -119,26 +173,35 @@ with st.sidebar:
     
     # Botón para reiniciar la conversación
     if st.button("Nueva Conversación"):
+        # Limpiar mensajes
         st.session_state.messages = []
         st.session_state.messages.append({
             "role": "assistant", 
             "content": "¡Hola! Soy tu asistente. ¿En qué puedo ayudarte hoy?"
         })
-        # También reiniciar el contexto del orquestador
-        if "agent" in st.session_state:
-            st.session_state.agent.context.conversation_history = []
-            st.session_state.agent.context.active_agent = None
         
-        st.success("Conversación reiniciada")
+        # Recrear el orquestador para asegurar un estado limpio del contexto interno
+        try:
+            # shared_context = SharedContext() # No es necesario crearla aquí
+            st.session_state.orchestrator = OrchestratorAgent() # Recrear sin pasar contexto
+            st.success("Conversación reiniciada")
+        except Exception as e:
+             logger.error(f"Error al reiniciar el orquestador: {e}", exc_info=True)
+             st.error(f"Error al reiniciar el asistente: {e}")
+        
         st.rerun()
 
 # Título principal
-st.title("Asistente Atlassian")
+st.title("🤖 Asistente Atlassian con RAG")
 
 # Mostrar mensajes
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# Asegurarse de que messages existe antes de iterar
+if "messages" in st.session_state:
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+else:
+    st.warning("Historial de mensajes no inicializado.")
 
 # Función para procesar mensajes
 def process_message(message):
@@ -156,7 +219,8 @@ def process_message(message):
             try:
                 # Obtener respuesta del orquestador
                 logger.info(f"Procesando mensaje: {message}")
-                response = st.session_state.agent.process_message_sync(message)
+                # Usar el agente persistido en session_state
+                response = orchestrator.process_message_sync(message) 
                 logger.info("Mensaje procesado correctamente")
                 
                 # Agregar respuesta del agente al estado
@@ -176,5 +240,9 @@ def process_message(message):
                 message_placeholder.markdown(error_msg)
 
 # Input para mensaje del usuario
-if prompt := st.chat_input("Escribe tu mensaje aquí..."):
-    process_message(prompt) 
+if prompt := st.chat_input("¿En qué puedo ayudarte hoy? (Jira, Confluence, Incidentes...)"):
+    process_message(prompt)
+
+# Mostrar estado de indexación (ya no es necesario si se maneja arriba)
+# if not indexing_successful:
+#     st.error("Hubo un problema al inicializar/actualizar la base de conocimientos. Las funciones RAG pueden no funcionar correctamente.") 
