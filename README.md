@@ -1,6 +1,6 @@
 # Asistente Atlassian
 
-Un agente conversacional para gestionar Jira y Confluence utilizando IA.
+Un agente conversacional para gestionar Jira y Confluence utilizando IA, ahora con conocimiento específico del proyecto gracias a RAG.
 
 ## Características
 
@@ -11,6 +11,8 @@ Un agente conversacional para gestionar Jira y Confluence utilizando IA.
 - **Análisis de horas** - Verifica si has cumplido con tus horas de trabajo
 - **Búsqueda de documentación** - Encuentra documentación en Confluence
 - **Consulta de contenidos** - Visualiza y extrae información de páginas de Confluence
+- **Generación Aumentada por Recuperación (RAG)** - Utiliza una base de conocimientos local (`knowledge_base/`) para proporcionar respuestas más precisas sobre información específica del proyecto (actualmente integrado en el agente de Jira)
+- **Indexación Automática** - La base de conocimientos RAG se actualiza automáticamente al iniciar la aplicación si se detectan cambios
 - **Interfaz conversacional** - Interactúa con Jira y Confluence utilizando lenguaje natural
 - **IA avanzada** - Utiliza modelos de OpenAI para procesar consultas en lenguaje natural
 - **Persistencia de contexto** - Mantiene el contexto de la conversación entre agentes
@@ -26,6 +28,7 @@ Un agente conversacional para gestionar Jira y Confluence utilizando IA.
 - Cuenta de Confluence con acceso a API
 - Token de API de Confluence
 - Clave de API de OpenAI
+- Dependencias listadas en `requirements.txt` (incluyendo `streamlit`, `langchain-*`, `chromadb`, `sentence-transformers`, etc.)
 
 ## Instalación
 
@@ -35,25 +38,59 @@ Un agente conversacional para gestionar Jira y Confluence utilizando IA.
    cd atlassian-assistant
    ```
 
-2. Instala las dependencias:
+2. Crea y activa un entorno virtual (recomendado):
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+3. Instala las dependencias:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Configura las variables de entorno:
+4. Configura las variables de entorno:
    ```bash
    cp env.example .env
    ```
    Edita el archivo `.env` con tus credenciales de Jira, Confluence y OpenAI.
 
+## Base de Conocimientos (RAG)
+
+Este proyecto utiliza **Retrieval-Augmented Generation (RAG)** para mejorar las respuestas del asistente con información específica.
+
+*   **Fuente de Conocimiento (`knowledge_base/`):**
+    *   Coloca archivos Markdown (`.md`) o de texto (`.txt`) en este directorio.
+    *   Estos archivos deben contener la información específica que deseas que el asistente conozca (definiciones, procedimientos, acrónimos, etc.).
+*   **Base de Datos Vectorial (`vector_store_db/`):**
+    *   ChromaDB almacena aquí una representación optimizada (embeddings) del contenido de `knowledge_base/` para búsquedas rápidas.
+    *   Este directorio se genera automáticamente y **no debe incluirse en Git** (está en `.gitignore`).
+*   **Indexación Automática:**
+    *   Al iniciar la aplicación (`python app.py`), el sistema comprueba si ha habido cambios en `knowledge_base/` desde la última indexación.
+    *   Si se detectan cambios (o si `vector_store_db/` no existe), la base de datos vectorial se actualiza automáticamente. Verás un mensaje como "Actualizando base de conocimientos..." en la interfaz de Streamlit.
+*   **Indexación Manual Forzada:**
+    *   Si necesitas forzar una reindexación completa manualmente (por ejemplo, si sospechas que el índice está corrupto), puedes ejecutar:
+        ```bash
+        # Asegúrate de que el venv está activo
+        python index_knowledge.py --force
+        ```
+*   **Uso Actual:**
+    *   Actualmente, solo el **Agente Jira** está configurado para utilizar el contexto RAG recuperado de esta base de conocimientos.
+
 ## Uso
 
-Ejecuta la aplicación:
-```bash
-python app.py
-```
+1. Asegúrate de que tu entorno virtual (`venv`) esté activado:
+   ```bash
+   source venv/bin/activate
+   ```
+2. Añade la información relevante a la carpeta `knowledge_base/` (si aún no lo has hecho).
+3. Ejecuta la aplicación principal:
+   ```bash
+   python app.py
+   ```
+   *Nota: `app.py` actúa como un wrapper que a su vez ejecuta la aplicación Streamlit principal definida en `orchestrator_app.py`.*
 
-Esto iniciará la interfaz web en `http://localhost:8501`
+Esto iniciará la interfaz web en una URL local (normalmente `http://localhost:8501`). La primera vez (o si cambiaste `knowledge_base/`), puede tardar un poco más mientras se indexan los documentos.
 
 ## Ejemplos de uso
 
@@ -64,6 +101,7 @@ Esto iniciará la interfaz web en `http://localhost:8501`
 - "¿Cuál es el estado de PSIMDESASW-222?"
 - "Cambiar el estado de mi historia PSIMDESASW-333"
 - "¿Cumplí con mis horas de ayer?"
+- "Explícame qué es el proyecto Foobar" (Si "proyecto Foobar" está definido en `knowledge_base/`)
 
 ### Confluence
 
@@ -98,12 +136,19 @@ atlassian-assistant/
 │       ├── confluence_client.py  # Cliente para interactuar con la API de Confluence
 │       └── logger.py             # Configuración de logs
 │
+├── knowledge_base/               # Directorio para archivos de conocimiento RAG (.md, .txt)
+│
+├── vector_store_db/              # Base de datos vectorial ChromaDB (generada, en .gitignore)
+│
+├── docs/                         # Documentación adicional (como RAG_OVERVIEW.md)
+│
 ├── .env                          # Variables de entorno (no incluido en el repositorio)
 ├── env.example                   # Ejemplo de variables de entorno
 ├── requirements.txt              # Dependencias
 ├── app.py                        # Punto de entrada de la aplicación
 ├── orchestrator_app.py           # Aplicación Streamlit con orquestador
 ├── confluence_app.py             # Aplicación Streamlit para Confluence
+├── index_knowledge.py            # Script para indexación manual forzada
 └── README.md                     # Este archivo
 ```
 
