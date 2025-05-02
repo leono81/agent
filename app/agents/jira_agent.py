@@ -80,6 +80,10 @@ if has_logfire and USE_LOGFIRE:
 # Configuración global de pydanticai para usar la API key de OpenAI
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
+# Importar la señal desde el orquestador o definirla aquí si es más limpio
+# Por ahora, la definimos aquí para evitar dependencias circulares
+AGENT_CANNOT_HANDLE_SIGNAL = "$AGENT_CANNOT_HANDLE"
+
 @dataclass
 class JiraAgentDependencies:
     """Dependencias para el agente de Jira."""
@@ -476,57 +480,49 @@ class JiraAgent:
             logger.error(f"Error al procesar mensaje: {e}")
             return f"Lo siento, ocurrió un error al procesar tu mensaje: {e}"
     
-    def process_message_sync(self, message: str) -> str:
+    def process_message_sync(
+        self,
+        message: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
-        Versión sincrónica de process_message.
-        
-        Args:
-            message (str): Mensaje del usuario.
-            
-        Returns:
-            str: Respuesta del agente.
+        Procesa un mensaje del usuario de forma síncrona, aceptando historial y metadatos.
+        Incluye un ejemplo para devolver AGENT_CANNOT_HANDLE_SIGNAL.
         """
-        import asyncio
-        
-        # Mensaje especial para limpieza/cierre
-        if message == "$__cleanup_signal__":
-            logger.info("Recibida señal de limpieza en el agente")
-            return "Cerrando sesión..."
-        
-        # Crear un nuevo loop para cada solicitud para evitar problemas de reutilización
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
+        logfire.info(f"JiraAgent procesando mensaje síncrono: {message}")
+
+        # --- Ejemplo de Señal de Reflexión --- 
+        # Si el mensaje indica explícitamente Confluence, devolvemos la señal
+        if "show me Confluence page" in message:
+            logfire.warning("Mensaje parece ser para Confluence, devolviendo señal de no manejo.")
+            return AGENT_CANNOT_HANDLE_SIGNAL
+        # --- Fin del Ejemplo ---
+
+        # Actualizar contexto interno si se proporciona desde el orquestador
+        if conversation_history is not None:
+            self._deps.context["conversation_history"] = conversation_history
+        if metadata is not None:
+            # Actualizar metadatos relevantes, como la fecha
+            if "current_date" in metadata:
+                self._deps.context["current_date"] = metadata["current_date"]
+            if "current_date_human" in metadata:
+                self._deps.context["current_date_human"] = metadata["current_date_human"]
+            if "weekday" in metadata:
+                self._deps.context["weekday"] = metadata["weekday"]
+
         try:
-            # Ejecutar el proceso asíncrono en el nuevo loop
-            response = loop.run_until_complete(self.process_message(message))
+            # Usar el agente interno de PydanticAI para procesar el mensaje
+            # Asegurarse de pasar las dependencias correctas
+            result = self.agent.run_sync(message, deps=self._deps)
+            response = result.data
+            logfire.info(f"JiraAgent respuesta generada: {response[:100]}...")
             return response
-            
-        except KeyboardInterrupt:
-            logger.warning("Solicitud interrumpida por el usuario")
-            return "La solicitud ha sido interrumpida. Por favor, intenta de nuevo."
-            
         except Exception as e:
-            logger.error(f"Error al procesar mensaje de forma sincrónica: {e}")
-            return f"Lo siento, ocurrió un error al procesar tu mensaje: {e}"
-            
-        finally:
-            # Asegurarse de que todas las tareas pendientes se completen y cerrar el loop
-            try:
-                # Cancelar todas las tareas pendientes
-                pending = asyncio.all_tasks(loop=loop)
-                for task in pending:
-                    task.cancel()
-                
-                # Ejecutar las tareas canceladas hasta que se complete la cancelación
-                if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                
-                # Cerrar el loop
-                loop.close()
-                
-            except Exception as close_error:
-                logger.warning(f"Error al cerrar el loop asyncio: {close_error}")
+            logger.error(f"Error en JiraAgent.process_message_sync: {e}", exc_info=True)
+            logfire.error(f"Error en JiraAgent.process_message_sync: {e}")
+            # Devolver un mensaje de error genérico o más específico si es posible
+            return f"Lo siento, tuve un problema al procesar tu solicitud con Jira: {e}"
 
     async def add_comment(self, ctx: RunContext[JiraAgentDependencies], issue_key: str, comment: str) -> Dict[str, Any]:
         """

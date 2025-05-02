@@ -1,5 +1,5 @@
 import os
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import logfire
 from pydantic_ai import Agent, RunContext
 from pydantic import BaseModel
@@ -7,6 +7,9 @@ from app.agents.jira_agent import JiraAgent
 from app.agents.confluence_agent import ConfluenceAgent
 from app.agents.incident_template_agent import IncidentTemplateAgent
 from datetime import datetime, date, timedelta
+
+MAX_HISTORY_LENGTH = 20  # Max number of messages (e.g., 10 user + 10 assistant)
+AGENT_CANNOT_HANDLE_SIGNAL = "$AGENT_CANNOT_HANDLE" # Signal for reflection
 
 class SharedContext(BaseModel):
     """Shared context that maintains conversation state between agents."""
@@ -16,19 +19,27 @@ class SharedContext(BaseModel):
     metadata: Dict[str, Any] = {}
     current_date: str = datetime.now().strftime("%Y-%m-%d")  # Fecha actual en formato ISO
 
+    def _trim_history(self):
+        """Keep only the last MAX_HISTORY_LENGTH messages."""
+        if len(self.conversation_history) > MAX_HISTORY_LENGTH:
+            self.conversation_history = self.conversation_history[-MAX_HISTORY_LENGTH:]
+            logfire.debug(f"Conversation history trimmed to {MAX_HISTORY_LENGTH} messages.")
+
     def add_user_message(self, content: str):
-        """Add a user message to the conversation history."""
+        """Add a user message to the conversation history and trim."""
         self.conversation_history.append({"role": "user", "content": content})
         self.last_query = content
+        self._trim_history() # Trim after adding
 
     def add_assistant_message(self, content: str, agent_type: str):
-        """Add an assistant message to the conversation history."""
+        """Add an assistant message to the conversation history and trim."""
         self.conversation_history.append({
-            "role": "assistant", 
+            "role": "assistant",
             "content": content,
             "agent_type": agent_type
         })
-        
+        self._trim_history() # Trim after adding
+
     def update_current_date(self):
         """Update the current date in the context."""
         now = datetime.now()
@@ -202,84 +213,158 @@ class OrchestratorAgent:
 
     def process_message_sync(self, message: str) -> str:
         """
-        Process a message from the user and return a response.
-        
-        Args:
-            message: The user's message
-            
-        Returns:
-            str: The response from the appropriate agent
+        Process a user message, classify, delegate, handle context, and potentially retry with reflection.
         """
-        logfire.info(f"Processing message: {message}")
-        
+        logfire.info(f"Orchestrator received message: {message}")
+
+        # Special handling for cleanup signal
+        if message == "$__cleanup_signal__":
+            logfire.info("Received cleanup signal, performing shutdown tasks...")
+            # Add any specific cleanup tasks for the orchestrator or sub-agents here
+            return "Cleanup signal processed."
+
+        # Update context: date and user message
+        self.context.update_current_date()
+        self.context.add_user_message(message)
+
+        # Determine the target agent
+        initial_agent_name = self.determine_agent_with_context(message)
+        final_agent_name = initial_agent_name # Start with the initial guess
+
+        logfire.info(f"Initial agent determined: {initial_agent_name}")
+
         try:
-            # Add the user message to the conversation history
-            self.context.add_user_message(message)
-            
-            # Check if we're in incident creation flow
-            if "incident_flow" in self.context.metadata and self.context.metadata["incident_flow"]["active"]:
-                return self._handle_incident_flow(message)
-            
-            # Determine which agent to use
-            agent_type = self.determine_agent_with_context(message)
-            self.context.active_agent = agent_type
-            
-            # Handle based on agent type
-            response = ""
-            if agent_type == "jira":
-                logfire.info("Using Jira agent")
-                response = self.jira_agent.process_message_sync(message)
-            elif agent_type == "confluence":
-                logfire.info("Using Confluence agent")
-                response = self.confluence_agent.process_message_sync(message)
-            elif agent_type == "incident":
-                logfire.info("Using Incident Template agent")
-                
-                # Iniciar el flujo de creación de incidentes
-                # Primero configuramos el estado del flujo
-                self.context.metadata["incident_flow"] = {
-                    "active": True,
-                    "current_step": 0,
-                    "collected_data": {
-                        "fecha_incidente": datetime.now().strftime("%Y-%m-%d")  # Fecha actual por defecto
-                    },
-                    "temp_list_items": []
-                }
-                
-                # Obtener la primera pregunta del template
-                first_question = self.incident_template_agent.template_config[0]
-                
-                # Crear la respuesta inicial
-                response = (
-                    "Entendido. Voy a ayudarte a registrar un incidente mayor. "
-                    "Te guiaré paso a paso para recopilar toda la información necesaria.\n\n"
-                    f"{first_question['question']}"
-                )
-                
-                # Si hay texto de ayuda, incluirlo
-                if 'help_text' in first_question:
-                    response += f"\n\n{first_question['help_text']}"
-                
-                # Si es un campo de selección, mostrar opciones
-                if first_question['type'] == 'choice' and 'options' in first_question:
-                    options_text = "\n".join([f"- {option}" for option in first_question['options']])
-                    response += f"\n\nOpciones disponibles:\n{options_text}"
-                
-                # Indicar cómo cancelar
-                response += "\n\n(Puedes escribir 'cancelar' en cualquier momento para detener el proceso)"
-                
+            agent_instance = None
+            if initial_agent_name == "jira":
+                agent_instance = self.jira_agent
+            elif initial_agent_name == "confluence":
+                agent_instance = self.confluence_agent
+            elif initial_agent_name == "incident":
+                # Incident flow requires special handling for initialization vs continuation
+                if not self.context.metadata.get("incident_flow", {}).get("active", False):
+                    # --- Initialize Incident Flow --- 
+                    logfire.info("Initializing Incident Template flow.")
+                    self.context.metadata["incident_flow"] = {
+                        "active": True,
+                        "current_step": 0,
+                        "collected_data": {
+                            "fecha_incidente": self.context.metadata.get("iso_date", datetime.now().strftime("%Y-%m-%d"))
+                        },
+                        "temp_list_items": [],
+                        "confirmation_step": False
+                    }
+                    
+                    # Get the first question from the template agent
+                    try:
+                        first_question = self.incident_template_agent.template_config[0]
+                    except (IndexError, AttributeError):
+                        logfire.error("Incident template config seems invalid or empty.")
+                        response = "Error: La configuración de la plantilla de incidentes no es válida."
+                        self.context.add_assistant_message(response, "incident")
+                        # Deactivate flow if config is bad
+                        self.context.metadata["incident_flow"]["active"] = False
+                        return response
+                    
+                    # Construct the initial response
+                    response = (
+                        "Entendido. Voy a ayudarte a registrar un incidente mayor. "
+                        "Te guiaré paso a paso para recopilar toda la información necesaria.\n\n"
+                        f"{first_question.get('question', 'Por favor, proporciona la información inicial.')}"
+                    )
+                    
+                    if 'help_text' in first_question:
+                        response += f"\n\n{first_question['help_text']}"
+                    
+                    if first_question.get('type') == 'choice' and 'options' in first_question:
+                        options_text = "\n".join([f"- {option}" for option in first_question['options']])
+                        response += f"\n\nOpciones disponibles:\n{options_text}"
+                    
+                    response += "\n\n(Puedes escribir 'cancelar' en cualquier momento para detener el proceso)"
+                    
+                    # Add the *initial* assistant response to history
+                    self.context.add_assistant_message(response, initial_agent_name)
+                    # Set the final agent name correctly for this initial response
+                    final_agent_name = initial_agent_name 
+                    # Return the initial message, don't proceed to reflection yet
+                    return response 
+                else:
+                    # --- Continue Incident Flow --- 
+                    logfire.info("Continuing existing Incident Template flow.")
+                    # The flow is already active, call the handler directly
+                    response = self._handle_incident_flow(message)
+                    # _handle_incident_flow adds its own response to history, so we just return
+                    final_agent_name = initial_agent_name # Ensure agent name is set
+                    return response
             else:
-                logfire.warning(f"Unknown agent type: {agent_type}")
-                response = "Lo siento, no puedo determinar qué agente debe manejar esta consulta."
-            
-            # Add the response to the conversation history
-            self.context.add_assistant_message(response, agent_type)
-            
+                logfire.error(f"Unknown initial agent: {initial_agent_name}")
+                response = "Lo siento, no estoy seguro de cómo manejar esa solicitud."
+                self.context.add_assistant_message(response, "orchestrator")
+                return response
+
+            # --- First Attempt ---
+            logfire.info(f"Attempting call to agent: {initial_agent_name}")
+            response = agent_instance.process_message_sync(
+                message, self.context.conversation_history, self.context.metadata
+            )
+
+            # --- Reflection Logic ---
+            if response == AGENT_CANNOT_HANDLE_SIGNAL:
+                logfire.warning(f"Agent {initial_agent_name} signaled it cannot handle. Attempting reflection.")
+
+                alternative_agent_name = None
+                alternative_agent_instance = None
+
+                if initial_agent_name == "jira":
+                    alternative_agent_name = "confluence"
+                    alternative_agent_instance = self.confluence_agent
+                elif initial_agent_name == "confluence":
+                    alternative_agent_name = "jira"
+                    alternative_agent_instance = self.jira_agent
+                # No alternative defined for 'incident' or others currently
+
+                if alternative_agent_instance:
+                    logfire.info(f"Retrying with alternative agent: {alternative_agent_name}")
+                    try:
+                        # --- Second Attempt ---
+                        response = alternative_agent_instance.process_message_sync(
+                            message, self.context.conversation_history, self.context.metadata
+                        )
+
+                        # Check if the alternative also failed
+                        if response == AGENT_CANNOT_HANDLE_SIGNAL:
+                             logfire.error(f"Alternative agent {alternative_agent_name} also signaled cannot handle.")
+                             response = "Lo siento, parece que ni Jira ni Confluence pueden manejar esta solicitud específica."
+                        else:
+                            # Alternative agent succeeded, update the final agent name
+                            final_agent_name = alternative_agent_name
+                            logfire.info(f"Alternative agent {alternative_agent_name} succeeded.")
+
+                    except Exception as e_alt:
+                        logfire.error(f"Error processing message with alternative agent {alternative_agent_name}: {e_alt}", exc_info=True)
+                        response = f"Lo siento, ocurrió un error al intentar procesar tu solicitud con el agente alternativo ({alternative_agent_name})."
+                else:
+                     logfire.warning(f"No alternative agent defined for {initial_agent_name}.")
+                     response = f"Lo siento, el agente inicial ({initial_agent_name}) no pudo procesar la solicitud y no hay un alternativo claro."
+
+
+            # --- Final Response Handling ---
+            # Update the active agent based on which agent *actually* handled it
+            self.context.active_agent = final_agent_name
+            # Add the final response (could be success, error, or 'cannot handle' message) to history
+            # Note: Incident flow handles its own history addition within _handle_incident_flow
+            # We only need to add history here if it wasn't the incident flow OR if it was the initial incident message (handled above)
+            # The current logic handles this correctly by adding history *after* potential reflection
+            self.context.add_assistant_message(response, final_agent_name)
             return response
-            
+
         except Exception as e:
-            logfire.exception(f"Error processing message: {e}")
-            return f"Lo siento, ocurrió un error al procesar tu mensaje: {e}"
+            # Catch errors during the *first* agent call (before reflection logic)
+            # Also catches errors during incident flow *initialization*
+            logfire.error(f"Error processing message with initial agent {initial_agent_name}: {e}", exc_info=True)
+            error_response = f"Lo siento, ocurrió un error inesperado al procesar tu solicitud con {initial_agent_name}."
+            self.context.active_agent = initial_agent_name # Keep initial agent as active on error
+            self.context.add_assistant_message(error_response, initial_agent_name)
+            return error_response
     
     def _handle_incident_flow(self, message: str) -> str:
         """

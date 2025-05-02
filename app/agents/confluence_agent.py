@@ -230,44 +230,49 @@ class ConfluenceAgent:
             logger.error(error_msg)
             return f"Lo siento, ocurrió un error al procesar tu mensaje. Por favor intenta de nuevo más tarde. Detalles: {str(e)}"
     
-    def process_message_sync(self, message: str) -> str:
+    def process_message_sync(
+        self,
+        message: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
         """
-        Versión síncrona de process_message.
-        
+        Procesa un mensaje del usuario de forma síncrona, aceptando historial y metadatos.
+
         Args:
             message: Mensaje del usuario.
-            
+            conversation_history: Historial de conversación opcional desde el orquestador.
+            metadata: Metadatos opcionales desde el orquestador.
+
         Returns:
-            str: Respuesta al usuario.
+            str: Respuesta del agente.
         """
+        logfire.info(f"ConfluenceAgent procesando mensaje síncrono: {message}")
+
+        # Actualizar contexto interno si se proporciona desde el orquestador
+        if conversation_history is not None:
+            self._deps.context["conversation_history"] = conversation_history
+        if metadata is not None:
+            # Actualizar metadatos relevantes, como la fecha
+            if "current_date" in metadata:
+                self._deps.context["current_date"] = metadata["current_date"]
+            if "current_date_human" in metadata:
+                self._deps.context["current_date_human"] = metadata["current_date_human"]
+            if "weekday" in metadata:
+                self._deps.context["weekday"] = metadata["weekday"]
+
         try:
-            # Guardar mensaje en el historial
-            if "conversation_history" in self._deps.context:
-                self._deps.context["conversation_history"].append({
-                    "role": "user",
-                    "content": message,
-                    "timestamp": datetime.now().isoformat()
-                })
-            
-            # Ejecutar el agente
+            # Usar el agente interno de PydanticAI para procesar el mensaje
+            # Asegurarse de pasar las dependencias correctas
             result = self.agent.run_sync(message, deps=self._deps)
-            
-            # Capturar la respuesta del agente
-            agent_response = result.data
-            
-            # Guardar respuesta en el historial
-            if "conversation_history" in self._deps.context:
-                self._deps.context["conversation_history"].append({
-                    "role": "assistant",
-                    "content": agent_response,
-                    "timestamp": datetime.now().isoformat()
-                })
-            
-            return agent_response
+            response = result.data
+            logfire.info(f"ConfluenceAgent respuesta generada: {response[:100]}...")
+            return response
         except Exception as e:
-            error_msg = f"Error al procesar mensaje: {str(e)}"
-            logger.error(error_msg)
-            return f"Lo siento, ocurrió un error al procesar tu mensaje. Por favor intenta de nuevo más tarde. Detalles: {str(e)}"
+            logger.error(f"Error en ConfluenceAgent.process_message_sync: {e}", exc_info=True)
+            logfire.error(f"Error en ConfluenceAgent.process_message_sync: {e}")
+            # Devolver un mensaje de error genérico o más específico si es posible
+            return f"Lo siento, tuve un problema al procesar tu solicitud con Confluence: {e}"
     
     async def get_conversation_history(self, ctx: RunContext[ConfluenceAgentDependencies]) -> List[Dict[str, str]]:
         """
