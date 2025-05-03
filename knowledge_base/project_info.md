@@ -21,3 +21,4 @@ El Asistente Atlassian es un agente conversacional diseñado para facilitar la i
 
 - **Registro de Tiempo Diario:** Se espera que todos los miembros del equipo registren su tiempo trabajado en las issues correspondientes de Jira al final de cada día.
 - **Revisión de Código:** Todo código nuevo debe pasar por una revisión de pares antes de ser fusionado a la rama principal.
+- **Listar historias:** Solo debes listar las historiars que no estan canceladas o implementadas.
