@@ -7,6 +7,10 @@ import locale
 from datetime import datetime
 from dotenv import load_dotenv
 import logfire
+# Importar constantes de configuración
+from app.config.config import KNOWLEDGE_COMMAND_PREFIX, MAX_KNOWLEDGE_LENGTH
+# Importar el manejador de conocimiento
+from app.utils.knowledge_manager import handle_add_knowledge
 
 # --- Configuración de Página (Debe ser el primer comando de Streamlit) ---
 st.set_page_config(
@@ -241,7 +245,44 @@ def process_message(message):
 
 # Input para mensaje del usuario
 if prompt := st.chat_input("¿En qué puedo ayudarte hoy? (Jira, Confluence, Incidentes...)"):
-    process_message(prompt)
+    # Limpiar espacios en blanco al inicio/final
+    user_input = prompt.strip()
+
+    # Comprobar si es un comando para añadir conocimiento
+    if user_input.startswith(KNOWLEDGE_COMMAND_PREFIX):
+        knowledge_to_add = user_input[len(KNOWLEDGE_COMMAND_PREFIX):].strip()
+
+        # Validar que el texto no esté vacío
+        if not knowledge_to_add:
+            st.chat_message("assistant").error("El comando para recordar está vacío. Debes proporcionar el texto después del prefijo.")
+            # Añadir mensaje de error al historial
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": "El comando para recordar estaba vacío. Por favor, incluye el texto a recordar después del prefijo."
+            })
+        # Validar longitud máxima
+        elif len(knowledge_to_add) > MAX_KNOWLEDGE_LENGTH:
+             error_msg = f"El texto a recordar es demasiado largo ({len(knowledge_to_add)} caracteres). El máximo permitido es {MAX_KNOWLEDGE_LENGTH}."
+             st.chat_message("assistant").error(error_msg)
+             # Añadir mensaje de error al historial
+             st.session_state.messages.append({
+                 "role": "assistant",
+                 "content": error_msg
+             })
+        else:
+            # Llamar a la función para manejar la adición de conocimiento
+            # Mostrar mensaje del usuario en el chat
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            # Llamar a la función que manejará el guardado y reindexado
+            handle_add_knowledge(knowledge_to_add)
+            # Detener el flujo normal (no enviar al orquestador)
+            # st.stop() # st.stop() puede ser problemático, es mejor solo no llamar a process_message
+
+    else:
+        # Si no es el comando, procesar normalmente con el orquestador
+        process_message(user_input) # Usar user_input que ya está sin espacios extra
 
 # Mostrar estado de indexación (ya no es necesario si se maneja arriba)
 # if not indexing_successful:

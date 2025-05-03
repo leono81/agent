@@ -27,4 +27,8 @@ LOGFIRE_TOKEN = os.getenv("LOGFIRE_TOKEN", "pylf_v1_us_WCthn2WSrxnsg18XjNwyFsJ0D
 USE_LOGFIRE = os.getenv("USE_LOGFIRE", "True").lower() in ["true", "1", "yes"]
 
 # Configuración de la aplicación
-APP_NAME = os.getenv("APP_NAME", "Jira Agent") 
+APP_NAME = os.getenv("APP_NAME", "Jira Agent")
+
+# Constants for adding knowledge via chat
+KNOWLEDGE_COMMAND_PREFIX = "Recuerda esto:"
+MAX_KNOWLEDGE_LENGTH = 1000 # Maximum characters for knowledge added via chat 
