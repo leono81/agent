@@ -62,8 +62,7 @@ if has_logfire and USE_LOGFIRE:
     try:
         # Configurar Logfire con el token proporcionado
         os.environ["LOGFIRE_TOKEN"] = LOGFIRE_TOKEN
-        logfire.configure(send_to_logfire=True)  # Activar envío a Logfire
-        logger.info("Logfire configurado correctamente con token de escritura")
+        logger.info("Logfire ya configurado globalmente")
         use_logfire = True
         
         # Registrar función para cerrar Logfire al salir
@@ -84,11 +83,7 @@ if has_logfire and USE_LOGFIRE:
         atexit.register(cleanup_logfire)
         
         # Instrumentar también las peticiones HTTP para un mejor seguimiento
-        try:
-            logfire.instrument_httpx(capture_all=True)
-            logger.info("Instrumentación HTTPX activada")
-        except Exception as http_e:
-            logger.warning(f"No se pudo activar la instrumentación HTTPX: {http_e}")
+        # (Eliminado: ahora se instrumenta globalmente en app/utils/logger.py)
             
     except Exception as e:
         logger.warning(f"No se pudo configurar Logfire: {e}. La instrumentación no estará disponible.")
@@ -132,7 +127,7 @@ class JiraAgent:
             # --- RAG Initialization ---
             self.retriever = None
             try:
-                logfire.info("Inicializando sistema RAG...")
+                logger.info("Inicializando sistema RAG...")
                 # Use HuggingFaceEmbeddings (recommended replacement)
                 embeddings = HuggingFaceEmbeddings(
                     model_name=EMBEDDING_MODEL,
@@ -145,9 +140,8 @@ class JiraAgent:
                     search_type="similarity",
                     search_kwargs={"k": 3}
                 )
-                logfire.info("Sistema RAG inicializado y retriever creado.")
+                logger.info("Sistema RAG inicializado y retriever creado.")
             except Exception as rag_e:
-                logfire.error(f"Error al inicializar RAG: {rag_e}", exc_info=True)
                 logger.error(f"Error al inicializar RAG: {rag_e}. El agente funcionará sin RAG.")
                 # El agente continuará sin RAG si falla la inicialización
             # --- End RAG Initialization ---
@@ -541,12 +535,12 @@ class JiraAgent:
         """
         Procesa un mensaje, recupera contexto RAG relevante, y llama al agente LLM.
         """
-        logfire.info(f"JiraAgent RAG procesando mensaje síncrono: {message}")
+        logger.info(f"JiraAgent RAG procesando mensaje síncrono: {message}")
 
         # --- Ejemplo de Señal de Reflexión --- 
         # Si el mensaje indica explícitamente Confluence, devolvemos la señal
         if "show me Confluence page" in message:
-            logfire.warning("Mensaje parece ser para Confluence, devolviendo señal de no manejo.")
+            logger.warning("Mensaje parece ser para Confluence, devolviendo señal de no manejo.")
             return AGENT_CANNOT_HANDLE_SIGNAL
         # --- Fin del Ejemplo ---
 
@@ -555,23 +549,23 @@ class JiraAgent:
         retrieved_docs = []
         if self.retriever:
             try:
-                logfire.info(f"Realizando búsqueda RAG para: {message}")
+                logger.info(f"Realizando búsqueda RAG para: {message}")
                 retrieved_docs = self.retriever.invoke(message)
                 if retrieved_docs:
-                    logfire.info(f"Recuperados {len(retrieved_docs)} chunks de RAG.")
+                    logger.info(f"Recuperados {len(retrieved_docs)} chunks de RAG.")
                     # Formatear el contexto RAG para el LLM
                     context_parts = [f"--- Fragmento {i+1} (Fuente: {doc.metadata.get('source', 'Desconocida')}) ---\n{doc.page_content}" 
                                      for i, doc in enumerate(retrieved_docs)]
                     rag_context = "\n\n### Contexto Adicional Relevante Recuperado:\n" + "\n\n".join(context_parts)
-                    logfire.debug(f"Contexto RAG formateado: {rag_context[:500]}...")
+                    logger.debug(f"Contexto RAG formateado: {rag_context[:500]}...")
                 else:
-                    logfire.info("No se encontraron chunks relevantes en RAG.")
+                    logger.info("No se encontraron chunks relevantes en RAG.")
             except Exception as rag_e:
-                logfire.error(f"Error durante la recuperación RAG: {rag_e}", exc_info=True)
+                logger.error(f"Error durante la recuperación RAG: {rag_e}", exc_info=True)
                 # Continuar sin contexto RAG si la recuperación falla
                 rag_context = "\n\n(Advertencia: Ocurrió un error al intentar recuperar contexto adicional.)"
         else:
-            logfire.warning("Retriever RAG no inicializado, omitiendo recuperación.")
+            logger.warning("Retriever RAG no inicializado, omitiendo recuperación.")
         # --- End RAG Retrieval ---
 
         # Actualizar contexto interno (historial, metadatos)
@@ -599,17 +593,17 @@ class JiraAgent:
             # Prepend the RAG context to the user message for the LLM to see
             # This is a simplification; more complex prompt engineering might be better.
             final_message_to_llm = f"{rag_context}\n\n### Consulta del Usuario:\n{message}"
-            logfire.info("Mensaje final al LLM incluye contexto RAG.")
+            logger.info("Mensaje final al LLM incluye contexto RAG.")
 
         try:
             # Llamar al agente LLM con el mensaje (posiblemente aumentado)
             result = self.agent.run_sync(final_message_to_llm, deps=self._deps)
             response = result.data
-            logfire.info(f"JiraAgent RAG respuesta generada: {response[:100]}...")
+            logger.info(f"JiraAgent RAG respuesta generada: {response[:100]}...")
             return response
         except Exception as e:
             logger.error(f"Error en JiraAgent.process_message_sync: {e}", exc_info=True)
-            logfire.error(f"Error en JiraAgent.process_message_sync: {e}")
+            logger.error(f"Error en JiraAgent.process_message_sync: {e}")
             # Devolver un mensaje de error genérico o más específico si es posible
             return f"Lo siento, tuve un problema al procesar tu solicitud con Jira: {e}"
 

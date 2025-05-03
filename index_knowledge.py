@@ -1,4 +1,5 @@
 import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 import logfire
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.embeddings import SentenceTransformerEmbeddings

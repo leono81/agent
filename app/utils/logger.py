@@ -34,6 +34,15 @@ logging.basicConfig(level=getattr(logging, LOG_LEVEL), handlers=[file_handler, c
 # Obtener el logger configurado
 agent_logger = logging.getLogger("jira_agent")
 
+# Instrumentar HTTPX solo una vez si Logfire está habilitado
+try:
+    if USE_LOGFIRE:
+        import logfire
+        logfire.instrument_httpx(capture_all=True)
+        agent_logger.info("Instrumentación HTTPX global activada (Logfire)")
+except Exception as e:
+    agent_logger.warning(f"No se pudo activar la instrumentación HTTPX global: {e}")
+
 def get_logger(name=None):
     """
     Devuelve un logger configurado.

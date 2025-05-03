@@ -28,39 +28,12 @@ if TYPE_CHECKING:
 logger = get_logger("confluence_agent")
 
 # Configurar logfire para el agente (si está disponible)
-use_logfire = False
-if has_logfire and USE_LOGFIRE:
+if USE_LOGFIRE:
     try:
-        # Configurar Logfire con el token proporcionado
         os.environ["LOGFIRE_TOKEN"] = LOGFIRE_TOKEN
-        logfire.configure(send_to_logfire=True)  # Activar envío a Logfire
-        logger.info("Logfire configurado correctamente con token de escritura")
-        use_logfire = True
-        
-        # Registrar función para cerrar Logfire al salir
-        def cleanup_logfire():
-            logger.info("Cerrando Logfire...")
-            try:
-                # Esperar 2 segundos para que se envíen los últimos logs
-                import time
-                time.sleep(2)
-                # En algunas versiones más recientes de Logfire es posible llamar a logfire.shutdown()
-                # Pero verificamos si existe el método
-                if hasattr(logfire, 'shutdown'):
-                    logfire.shutdown()
-            except Exception as e:
-                logger.warning(f"Error al cerrar Logfire: {e}")
-        
-        # Registrar la función para ejecutarse al salir
-        atexit.register(cleanup_logfire)
-        
+        logger.info("Logfire ya configurado globalmente")
         # Instrumentar también las peticiones HTTP para un mejor seguimiento
-        try:
-            logfire.instrument_httpx(capture_all=True)
-            logger.info("Instrumentación HTTPX activada")
-        except Exception as http_e:
-            logger.warning(f"No se pudo activar la instrumentación HTTPX: {http_e}")
-            
+        # (Eliminado: ahora se instrumenta globalmente en app/utils/logger.py)
     except Exception as e:
         logger.warning(f"No se pudo configurar Logfire: {e}. La instrumentación no estará disponible.")
 
@@ -182,7 +155,7 @@ class ConfluenceAgent:
                     "- Este agente está configurado para buscar en los espacios: PSIMDESASW, ITIndustrial. "
                     "- Si el usuario quiere buscar en un espacio diferente, infórmale que por ahora solo puedes buscar en estos espacios específicos."
                 ),
-                instrument=use_logfire  # Habilitar instrumentación para monitoreo con logfire solo si está disponible
+                instrument=USE_LOGFIRE  # Habilitar instrumentación para monitoreo con logfire solo si está disponible
             )
             
             logger.info("Agente de Confluence inicializado correctamente")
@@ -247,7 +220,7 @@ class ConfluenceAgent:
         Returns:
             str: Respuesta del agente.
         """
-        logfire.info(f"ConfluenceAgent procesando mensaje síncrono: {message}")
+        logger.info(f"ConfluenceAgent procesando mensaje síncrono: {message}")
 
         # Actualizar contexto interno si se proporciona desde el orquestador
         if conversation_history is not None:
@@ -266,11 +239,11 @@ class ConfluenceAgent:
             # Asegurarse de pasar las dependencias correctas
             result = self.agent.run_sync(message, deps=self._deps)
             response = result.data
-            logfire.info(f"ConfluenceAgent respuesta generada: {response[:100]}...")
+            logger.info(f"ConfluenceAgent respuesta generada: {response[:100]}...")
             return response
         except Exception as e:
             logger.error(f"Error en ConfluenceAgent.process_message_sync: {e}", exc_info=True)
-            logfire.error(f"Error en ConfluenceAgent.process_message_sync: {e}")
+            logger.error(f"Error en ConfluenceAgent.process_message_sync: {e}")
             # Devolver un mensaje de error genérico o más específico si es posible
             return f"Lo siento, tuve un problema al procesar tu solicitud con Confluence: {e}"
     

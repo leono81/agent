@@ -64,13 +64,8 @@ from app.utils.logger import get_logger
 # Configurar logger
 logger = get_logger("orchestrator_app")
 
-# Configurar Logfire
-try:
-    logfire.configure()
-    logfire.info("Logfire configurado para orchestrator_app.")
-except Exception as e:
-    st.warning(f"No se pudo configurar Logfire: {e}") # ¡Ojo! Esto es un comando st.
-    logfire.info(f"Logfire no configurado: {e}") # Log localmente si falla
+# Desactivar la telemetría de ChromaDB desde el código
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 # --- Indexación de la Base de Conocimientos (se ejecuta solo una vez por sesión de Streamlit) ---
 @st.cache_resource(show_spinner="Actualizando base de conocimientos si es necesario...")
@@ -144,7 +139,7 @@ if 'orchestrator' not in st.session_state:
         # Crear el contexto compartido primero (NO SE PASA AL CONSTRUCTOR)
         # shared_context = SharedContext() # El agente lo crea internamente
         st.session_state.orchestrator = OrchestratorAgent() # No pasar 'context'
-        logfire.info("Nueva instancia de OrchestratorAgent creada y guardada en session_state.")
+        logger.info("Nueva instancia de OrchestratorAgent creada y guardada en session_state.")
         # No reiniciar mensajes aquí si ya existe la clave 'messages'
         if "messages" not in st.session_state or not st.session_state.messages:
              st.session_state.messages = [] # Inicializar historial de chat si es necesario
@@ -159,7 +154,6 @@ if 'orchestrator' not in st.session_state:
         st.stop() # Detener la app si el agente no se puede crear
 
 orchestrator: OrchestratorAgent = st.session_state.orchestrator
-
 
 # Sidebar con información
 with st.sidebar:
