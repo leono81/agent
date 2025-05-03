@@ -42,10 +42,19 @@ try:
 except locale.Error:
     try:
         # Intentar configuración alternativa/Windows
-        locale.setlocale(locale.LC_TIME, 'es-ES') 
+        locale.setlocale(locale.LC_TIME, 'es_ES') 
     except locale.Error:
-        # Ahora el logger existe, así que esto funcionará
-        logger.warning("No se pudo configurar el locale a español (es_ES o es-ES). El parseo de meses en texto puede fallar.")
+        try:
+            locale.setlocale(locale.LC_TIME, 'es_AR.UTF-8')
+        except locale.Error:
+            try:
+                locale.setlocale(locale.LC_TIME, 'es_AR')
+            except locale.Error:
+                try:
+                    locale.setlocale(locale.LC_TIME, 'Spanish')
+                except locale.Error:
+                    # Ahora el logger existe, así que esto funcionará
+                    logger.warning("No se pudo configurar el locale a español (es_ES, es_AR, Spanish). El parseo de meses en texto puede fallar.")
 
 # Configurar logfire para el agente (si está disponible)
 use_logfire = False

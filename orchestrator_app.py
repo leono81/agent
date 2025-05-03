@@ -35,9 +35,15 @@ except locale.Error:
         locale.setlocale(locale.LC_TIME, 'es_ES')
     except locale.Error:
         try:
-            locale.setlocale(locale.LC_TIME, 'Spanish')
+            locale.setlocale(locale.LC_TIME, 'es_AR.UTF-8')
         except locale.Error:
-            print("No se pudo configurar el locale para español, usando el predeterminado.")
+            try:
+                locale.setlocale(locale.LC_TIME, 'es_AR')
+            except locale.Error:
+                try:
+                    locale.setlocale(locale.LC_TIME, 'Spanish')
+                except locale.Error:
+                    print("No se pudo configurar el locale para español (es_ES, es_AR, Spanish), usando el predeterminado.")
 
 # Cargar variables de entorno
 load_dotenv()

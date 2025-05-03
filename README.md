@@ -92,6 +92,14 @@ Este proyecto utiliza **Retrieval-Augmented Generation (RAG)** para mejorar las 
 
 Esto iniciará la interfaz web en una URL local (normalmente `http://localhost:8501`). La primera vez (o si cambiaste `knowledge_base/`), puede tardar un poco más mientras se indexan los documentos.
 
+### Características Principales
+
+*   **Consultas en Lenguaje Natural:** Interactúa con el chatbot usando lenguaje natural para obtener información o realizar acciones.
+*   **Integración con Jira:** Busca issues, crea issues, registra tiempo (worklogs).
+*   **Integración con Confluence:** Busca páginas o contenido específico.
+*   **Base de Conocimientos (RAG):** Responde preguntas basadas en la documentación interna almacenada en `knowledge_base/`.
+*   **Añadir Conocimiento desde el Chat:** Puedes enseñar nueva información al asistente directamente desde la conversación.
+
 ## Ejemplos de uso
 
 ### Jira
@@ -269,3 +277,14 @@ Y luego, en la interfaz conversacional, puedes escribir mensajes como:
 - "Ayúdame a documentar un problema"
 
 El orquestador te redirigirá automáticamente al ATI. 
+
+### Añadir Conocimiento al Asistente
+
+Puedes ampliar la base de conocimientos del asistente directamente desde la interfaz de chat utilizando un comando especial:
+
+*   **Comando:** Empieza tu mensaje con el prefijo `Recuerda esto:` (configurable en `app/config/config.py`).
+*   **Texto:** Escribe la información que quieres que el asistente aprenda después del prefijo.
+*   **Ejemplo:** `Recuerda esto: El nuevo servidor de pruebas está en la IP 10.0.5.120`
+*   **Límite:** La longitud máxima del texto a añadir es de 1000 caracteres (configurable).
+
+Al recibir este comando, el asistente guardará la información en un nuevo archivo dentro de `knowledge_base/` y actualizará automáticamente su índice de conocimientos (esto puede tardar unos segundos, verás un indicador de progreso). 

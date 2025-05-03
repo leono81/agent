@@ -19,8 +19,21 @@ except Exception as e:
 
 def handle_add_knowledge(knowledge_text: str):
     """
-    Guarda un fragmento de texto como un nuevo archivo en la base de conocimientos
-    y luego dispara la reindexación completa.
+    Procesa un fragmento de texto proporcionado por el usuario para añadirlo
+    a la base de conocimientos.
+
+    Pasos:
+    1. Genera un nombre de archivo único basado en timestamp.
+    2. Guarda el `knowledge_text` en un nuevo archivo `.txt` dentro del directorio
+       `KNOWLEDGE_BASE_DIR` (definido en `app.utils.indexing`).
+    3. Dispara una reindexación completa de la base de conocimientos llamando a
+       `update_vector_store(force_reindex=True)`.
+    4. Muestra feedback al usuario en la interfaz de Streamlit (spinner,
+       mensajes de éxito/error) y actualiza el historial de chat.
+    5. Maneja errores durante la escritura del archivo o la reindexación.
+
+    Args:
+        knowledge_text: El texto limpio (sin el prefijo) que el usuario desea añadir.
     """
     logfire.info(f"Intentando añadir nuevo conocimiento: '{knowledge_text[:50]}...'") # Loguea el inicio
 
