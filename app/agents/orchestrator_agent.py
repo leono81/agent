@@ -180,35 +180,43 @@ class OrchestratorAgent:
     def determine_agent_with_context(self, query: str) -> str:
         """
         Determine which agent to use based on the query and conversation context.
-        
+        Prioritizes active incident flow.
+
         Args:
             query: The user's query
-            
+
         Returns:
             str: "jira", "confluence", or "incident"
         """
+        # --- Prioritize active incident flow ---
+        if self.context.metadata.get("incident_flow", {}).get("active", False):
+            logfire.info("Incident flow is active, routing to 'incident'")
+            return "incident"
+
+        # --- Check for existing active agent (non-incident) ---
         # If we have an active agent from previous conversation, use that
         # unless the query seems clearly related to the other agent
         if self.context.active_agent:
             classification = self.classify_query(query)
-            
+
             # If the classification is clear and different from the active agent,
             # switch agents
             if classification != "unsure" and classification != self.context.active_agent:
                 logfire.info(f"Switching from {self.context.active_agent} to {classification}")
                 return classification
-            
+
             # Otherwise stick with the active agent
             return self.context.active_agent
-        
+
+        # --- No active agent, classify the query ---
         # No active agent, classify the query
         classification = self.classify_query(query)
-        
+
         # If classification is unsure, default to Jira as it's more common
         if classification == "unsure":
             logfire.info("Classification unsure, defaulting to Jira")
-            return "jira"
-        
+            return "jira" # Default if unsure and no active flow/agent
+
         return classification
 
     def process_message_sync(self, message: str) -> str:
@@ -280,11 +288,15 @@ class OrchestratorAgent:
                         response += f"\n\nOpciones disponibles:\n{options_text}"
                     
                     response += "\n\n(Puedes escribir 'cancelar' en cualquier momento para detener el proceso)"
+
+                    # !! ADD THIS LINE !! Set active agent immediately
+                    self.context.active_agent = "incident"
+                    logfire.info("Incident flow initialized and active_agent set to 'incident'.")
                     
                     # Add the *initial* assistant response to history
                     self.context.add_assistant_message(response, initial_agent_name)
                     # Set the final agent name correctly for this initial response
-                    final_agent_name = initial_agent_name 
+                    # final_agent_name = initial_agent_name # This is already set earlier
                     # Return the initial message, don't proceed to reflection yet
                     return response 
                 else:

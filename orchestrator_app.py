@@ -108,19 +108,7 @@ def cleanup_resources():
 # Registrar la función de limpieza para ejecutarse al salir
 atexit.register(cleanup_resources)
 
-# Manejo de señales
-def signal_handler(sig, frame):
-    logger.info(f"Señal recibida: {sig}. Limpiando recursos...")
-    cleanup_resources()
-    # Al ser un servidor web, dejamos que Streamlit maneje la salida por sí mismo
-
-# Configurar manejadores de señales
-try:
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-except (ValueError, AttributeError):
-    # Ignorar errores en entornos donde no se pueden configurar señales (ej. hilos)
-    logger.warning("No se pudieron configurar los manejadores de señales")
+# --- REMOVED SIGNAL HANDLING BLOCK ---
 
 
 # Inicializar el estado de la sesión para mensajes
